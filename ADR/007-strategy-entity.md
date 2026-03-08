@@ -101,3 +101,4 @@ Chat tools: `create_strategy`, `update_strategy_state`, `update_strategy_plan`, 
 - The `create_strategy` tool description instructs the LLM to propose concrete triggers and schedules after creation, driving the proactive post-creation UX entirely through the tool description — no code change required.
 - Strategy context injection adds one `strategyStore.get()` call per reasoning job. For the scheduler runner, one additional `dhan.getFunds()` call is made in parallel when a strategy is linked.
 - The Strategies tab in the frontend shows state-colored badges, collapsible plan text, and an archive button. Triggers and schedule cards show a violet strategy tag when linked.
+- **Phase 8 addition (ADR-008):** Each strategy card gains a "Performance" button that opens a per-strategy dashboard showing realized P&L, win rate, allocation deployment, open positions, and the full trade log. Trade records are linked to strategies via `strategyId` on `TradeRecord`.

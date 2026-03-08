@@ -26,8 +26,13 @@ Rather than scatter file I/O across routes or hard-code a storage backend, we in
 export interface StorageProvider {
   conversations: ConversationStore;
   memory: MemoryStore;
-  // strategies: StrategyStore;   — future phase
-  // portfolio: PortfolioStore;   — future phase
+  triggers: TriggerStore;        // added Phase 5 (heartbeat)
+  approvals: ApprovalStore;      // added Phase 5 (heartbeat)
+  triggerAudit: TriggerAuditStore;
+  schedules: ScheduleStore;      // added Phase 6 (scheduler)
+  scheduleRuns: ScheduleRunStore;
+  strategies: StrategyStore;     // added Phase 7 (ADR-007)
+  trades: TradeStore;            // added Phase 8 (ADR-008)
 }
 ```
 
@@ -111,6 +116,6 @@ backend/data/                    — runtime data dir (gitignored)
 ## Consequences
 
 - **Adding a hosted provider** requires: a new class implementing `StorageProvider`, wired into the factory. No route changes.
-- **Adding a new store** (strategies, portfolio) requires: an interface in `types.ts`, a local implementation, a field on `LocalStorageProvider`, and wiring in `server.ts`. Routes remain unaffected. `MemoryStore` is the first example of this pattern exercised in practice (Phase 5).
+- **Adding a new store** requires: an interface in `types.ts`, a local implementation, a field on `LocalStorageProvider`, and wiring in `server.ts`. Routes remain unaffected. This pattern has been exercised for `MemoryStore`, `TriggerStore`, `StrategyStore`, and `TradeStore` across Phases 5–8.
 - **Testing** routes is straightforward: pass a mock `ConversationStore` or `MemoryStore` via the `opts` argument to `chatRoute`.
 - **Data inspection** for localhost deployments is as simple as `cat backend/data/<id>.jsonl | jq .`.
