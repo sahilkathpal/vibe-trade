@@ -2,10 +2,10 @@ import type { FastifyInstance } from "fastify";
 import Anthropic from "@anthropic-ai/sdk";
 import { randomUUID } from "crypto";
 import { DhanClient } from "../lib/dhan/client.js";
-import { TOOLS, type ToolDefinition, getAllToolDefinitions, getApprovalDescription, createUpdateMemoryTool, createRegisterTriggerTool, createCancelTriggerTool, createListTriggersTool, createRegisterScheduleTool, createPauseScheduleTool, createResumeScheduleTool, createListSchedulesTool, createDeleteScheduleTool } from "../lib/tools.js";
+import { TOOLS, type ToolDefinition, getAllToolDefinitions, getApprovalDescription, createUpdateMemoryTool, createRegisterTriggerTool, createCancelTriggerTool, createListTriggersTool, createRegisterScheduleTool, createPauseScheduleTool, createResumeScheduleTool, createListSchedulesTool, createDeleteScheduleTool, createStrategyTools } from "../lib/tools.js";
 import { DhanTokenExpiredError } from "../types.js";
 import type { ClientMessage, ServerMessage } from "../types.js";
-import type { ConversationStore, MemoryStore, TriggerStore, ApprovalStore, ScheduleStore } from "../lib/storage/index.js";
+import type { ConversationStore, MemoryStore, TriggerStore, ApprovalStore, ScheduleStore, StrategyStore } from "../lib/storage/index.js";
 
 const anthropic = new Anthropic();
 
@@ -30,7 +30,7 @@ Error handling:
 - Common translations: a 400 error on a quote usually means the market is closed or the symbol isn't available right now; a 400 on an order means the order parameters were invalid; a 5xx means Dhan's servers are having issues
 - If the error is "TOOL_ERROR: TOKEN_EXPIRED", tell the user their session has expired and they need to reconnect — do not call any more tools`;
 
-export async function chatRoute(fastify: FastifyInstance, opts: { store: ConversationStore; memory: MemoryStore; triggers: TriggerStore; approvals: ApprovalStore; schedules: ScheduleStore }) {
+export async function chatRoute(fastify: FastifyInstance, opts: { store: ConversationStore; memory: MemoryStore; triggers: TriggerStore; approvals: ApprovalStore; schedules: ScheduleStore; strategies: StrategyStore }) {
   fastify.get("/ws/chat", { websocket: true }, async (socket, request) => {
     const dhanClient = new DhanClient();
     const pendingApprovals = new Map<string, (approved: boolean) => void>();
@@ -47,6 +47,7 @@ export async function chatRoute(fastify: FastifyInstance, opts: { store: Convers
     const resumeScheduleTool = createResumeScheduleTool(opts.schedules);
     const listSchedulesTool = createListSchedulesTool(opts.schedules);
     const deleteScheduleTool = createDeleteScheduleTool(opts.schedules);
+    const strategyToolList = createStrategyTools(opts.strategies);
     const localTools: Record<string, ToolDefinition> = {
       update_memory: updateMemoryTool,
       register_trigger: registerTriggerTool,
@@ -58,8 +59,11 @@ export async function chatRoute(fastify: FastifyInstance, opts: { store: Convers
       list_schedules: listSchedulesTool,
       delete_schedule: deleteScheduleTool,
     };
+    for (const t of strategyToolList) {
+      localTools[t.definition.name] = t;
+    }
     const memoryContent = await opts.memory.read();
-    const systemPrompt = SYSTEM_PROMPT + (memoryContent ? `\n\n<memory>\n${memoryContent}\n</memory>` : "");
+    const baseSystemPrompt = SYSTEM_PROMPT + (memoryContent ? `\n\n<memory>\n${memoryContent}\n</memory>` : "");
 
     function send(msg: ServerMessage) {
       if (socket.readyState === socket.OPEN) {
@@ -90,7 +94,34 @@ export async function chatRoute(fastify: FastifyInstance, opts: { store: Convers
         for (const msg of clientMsg.messages) {
           conversationHistory.push({ role: msg.role, content: msg.content });
         }
-        await runClaudeLoop(dhanClient, conversationHistory, pendingApprovals, send, systemPrompt, localTools, opts.approvals);
+
+        // Resolve @mention strategy context for this turn
+        const lastUserMsg = clientMsg.messages.find(m => m.role === "user");
+        let turnSystemPrompt = baseSystemPrompt;
+        if (lastUserMsg) {
+          const mentionPattern = /@([\w\s-]+)/g;
+          const matches = [...String(lastUserMsg.content).matchAll(mentionPattern)];
+          if (matches.length > 0) {
+            const allStrategies = await opts.strategies.list({ status: "active" });
+            const strategyBlocks: string[] = [];
+            for (const match of matches) {
+              const mentionName = match[1].trim().toLowerCase();
+              const resolved = allStrategies.find(s => s.name.toLowerCase().includes(mentionName));
+              if (resolved) {
+                strategyBlocks.push(`<strategy name="${resolved.name}">
+State: ${resolved.state}  |  Allocation: ₹${resolved.allocation.toLocaleString("en-IN")}
+
+${resolved.plan}
+</strategy>`);
+              }
+            }
+            if (strategyBlocks.length > 0) {
+              turnSystemPrompt = baseSystemPrompt + "\n\n" + strategyBlocks.join("\n\n");
+            }
+          }
+        }
+
+        await runClaudeLoop(dhanClient, conversationHistory, pendingApprovals, send, turnSystemPrompt, localTools, opts.approvals);
         await opts.store.append(conversationId, conversationHistory.slice(saveFrom));
       }
     });

@@ -32,6 +32,7 @@ export interface Trigger {
   status: TriggerStatus;
   firedAt?: string;
   outcomeId?: string;
+  strategyId?: string;
 }
 
 export interface QuoteEntry {
@@ -76,6 +77,7 @@ export type PendingApproval =
       createdAt: string;
       expiresAt: string;
       decidedAt?: string;
+      strategyId?: string;
     }
   | {
       id: string;
@@ -88,6 +90,7 @@ export type PendingApproval =
       createdAt: string;
       expiresAt: string;
       decidedAt?: string;
+      strategyId?: string;
     };
 
 export interface TriggerAuditEntry {
@@ -102,4 +105,5 @@ export interface TriggerAuditEntry {
     | { type: "hard_order_failed"; error: string }
     | { type: "reasoning_job_queued"; approvalId?: string }
     | { type: "reasoning_job_no_action"; reason: string };
+  strategyId?: string;
 }

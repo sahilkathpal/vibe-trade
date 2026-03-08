@@ -1,7 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { randomUUID } from "crypto";
 import type { DhanClient } from "../dhan/client.js";
-import type { ApprovalStore, MemoryStore } from "../storage/index.js";
+import type { ApprovalStore, MemoryStore, StrategyStore } from "../storage/index.js";
 import type { TriggerStore } from "../storage/index.js";
 import type { Schedule } from "./types.js";
 import type { ScheduleRunStore } from "./store.js";
@@ -128,13 +128,45 @@ export async function runScheduleJob(
   approvalStore: ApprovalStore,
   scheduleRunStore: ScheduleRunStore,
   memory: MemoryStore,
+  strategyStore?: StrategyStore,
 ): Promise<void> {
   const startedAt = new Date().toISOString();
   const runId = randomUUID();
 
   try {
     const memoryContent = await memory.read().catch(() => "");
-    const systemPrompt = SCHEDULE_RUNNER_SYSTEM + (memoryContent ? `\n\n<memory>\n${memoryContent}\n</memory>` : "");
+    let systemPrompt = SCHEDULE_RUNNER_SYSTEM + (memoryContent ? `\n\n<memory>\n${memoryContent}\n</memory>` : "");
+
+    // Inject strategy context if schedule is linked to a strategy
+    if (schedule.strategyId && strategyStore) {
+      const strategy = await strategyStore.get(schedule.strategyId).catch(() => null);
+      if (strategy) {
+        const [activeTriggers, fundsRaw] = await Promise.all([
+          triggerStore.list({ status: "active" }),
+          dhan.getFunds().catch(() => null),
+        ]);
+        const linkedTriggers = activeTriggers.filter(t => t.strategyId === strategy.id);
+        const triggersBlock = linkedTriggers.length > 0
+          ? linkedTriggers.map(t => `- "${t.name}": ${JSON.stringify(t.condition)} → ${t.action.type}`).join("\n")
+          : "None";
+        const funds = fundsRaw as { availableBalance?: number } | null;
+        const availableBalance = funds?.availableBalance ?? null;
+        const fundsLine = availableBalance !== null
+          ? `Available balance: ₹${availableBalance.toLocaleString("en-IN")}  |  Allocation: ₹${strategy.allocation.toLocaleString("en-IN")}${availableBalance < strategy.allocation ? "  ⚠️ Balance is below strategy allocation" : ""}`
+          : `Allocation: ₹${strategy.allocation.toLocaleString("en-IN")}  (live balance unavailable)`;
+        systemPrompt += `\n\n<strategy name="${strategy.name}">
+State: ${strategy.state}  |  ${fundsLine}
+
+## Plan
+${strategy.plan}
+
+## Active Triggers
+${triggersBlock}
+
+IMPORTANT: Before queuing any trade, confirm the required capital does not exceed the available balance shown above. If funds are insufficient, call no_action with a clear reason.
+</strategy>`;
+      }
+    }
 
     const allTools: Anthropic.Tool[] = [
       ...READ_ONLY_TOOLS.map(name => TOOLS[name]!.definition),
@@ -196,6 +228,7 @@ export async function runScheduleJob(
             reasoning: args.reasoning as string,
             tradeArgs, status: "pending",
             createdAt: new Date().toISOString(), expiresAt: expiry,
+            ...(schedule.strategyId ? { strategyId: schedule.strategyId } : {}),
           });
           approvalIds.push(approvalId);
           console.log(`[scheduler] queued trade approval ${approvalId} for schedule ${schedule.id}`);
@@ -276,7 +309,7 @@ export async function runScheduleJob(
       outcome = { type: "completed", summary: "Completed with no explicit actions", approvalIds: [] };
     }
 
-    await scheduleRunStore.append({ id: runId, scheduleId: schedule.id, scheduleName: schedule.name, startedAt, completedAt, outcome });
+    await scheduleRunStore.append({ id: runId, scheduleId: schedule.id, scheduleName: schedule.name, startedAt, completedAt, outcome, ...(schedule.strategyId ? { strategyId: schedule.strategyId } : {}) });
     console.log(`[scheduler] run ${runId} for schedule ${schedule.id} completed: ${outcome.type}`);
 
   } catch (err) {

@@ -17,6 +17,12 @@ interface Schedule {
   lastRunAt?: string;
   nextRunAt: string;
   createdAt: string;
+  strategyId?: string;
+}
+
+interface Strategy {
+  id: string;
+  name: string;
 }
 
 type ScheduleRunOutcome =
@@ -80,9 +86,19 @@ function EmptyState({ message, sub }: { message: string; sub: string }) {
   );
 }
 
+// ── Strategy tag ───────────────────────────────────────────────────────────────
+
+function StrategyTag({ name }: { name: string }) {
+  return (
+    <span className="px-1.5 py-0.5 rounded text-xs bg-violet-900/40 text-violet-300 border border-violet-800/40 flex items-center gap-1">
+      <span className="opacity-60">↗</span>{name}
+    </span>
+  );
+}
+
 // ── Schedule Card ──────────────────────────────────────────────────────────────
 
-function ScheduleCard({ schedule, onRefresh }: { schedule: Schedule; onRefresh: () => void }) {
+function ScheduleCard({ schedule, strategyName, onRefresh }: { schedule: Schedule; strategyName?: string; onRefresh: () => void }) {
   const [loading, setLoading] = useState(false);
 
   const handlePause = async () => {
@@ -126,7 +142,10 @@ function ScheduleCard({ schedule, onRefresh }: { schedule: Schedule; onRefresh: 
     <div className="rounded-xl border border-gray-700 bg-gray-800/60 p-4 space-y-3">
       <div className="flex items-start justify-between gap-3">
         <div className="space-y-1 min-w-0">
-          <p className="text-sm font-semibold text-white truncate">{schedule.name}</p>
+          <div className="flex items-center gap-2 flex-wrap">
+            <p className="text-sm font-semibold text-white truncate">{schedule.name}</p>
+            {strategyName && <StrategyTag name={strategyName} />}
+          </div>
           <p className="text-xs text-gray-400 line-clamp-2">{schedule.description}</p>
         </div>
         <span
@@ -245,15 +264,22 @@ export function SchedulesPanel() {
   const [subTab, setSubTab] = useState<"active" | "history">("active");
   const [schedules, setSchedules] = useState<Schedule[]>([]);
   const [runs, setRuns] = useState<ScheduleRun[]>([]);
+  const [strategyMap, setStrategyMap] = useState<Record<string, string>>({});
   const [loadingSchedules, setLoadingSchedules] = useState(true);
   const [loadingRuns, setLoadingRuns] = useState(true);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const fetchSchedules = useCallback(async () => {
     try {
-      const res = await fetch(`${BACKEND_URL}/api/schedules`);
-      if (!res.ok) return;
-      setSchedules((await res.json()) as Schedule[]);
+      const [schedulesRes, strategiesRes] = await Promise.all([
+        fetch(`${BACKEND_URL}/api/schedules`),
+        fetch(`${BACKEND_URL}/api/strategies`),
+      ]);
+      if (schedulesRes.ok) setSchedules((await schedulesRes.json()) as Schedule[]);
+      if (strategiesRes.ok) {
+        const strategies = (await strategiesRes.json()) as Strategy[];
+        setStrategyMap(Object.fromEntries(strategies.map(s => [s.id, s.name])));
+      }
     } catch {
       // ignore
     } finally {
@@ -325,7 +351,7 @@ export function SchedulesPanel() {
             ) : (
               <div className="p-4 space-y-3">
                 {schedules.map((s) => (
-                  <ScheduleCard key={s.id} schedule={s} onRefresh={fetchSchedules} />
+                  <ScheduleCard key={s.id} schedule={s} strategyName={s.strategyId ? strategyMap[s.strategyId] : undefined} onRefresh={fetchSchedules} />
                 ))}
               </div>
             )}

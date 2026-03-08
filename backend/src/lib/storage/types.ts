@@ -2,6 +2,30 @@ import type Anthropic from "@anthropic-ai/sdk";
 import type { Trigger, TriggerStatus, PendingApproval, ApprovalStatus, TriggerAuditEntry } from "../heartbeat/types.js";
 import type { Schedule, ScheduleStatus, ScheduleRun } from "../scheduler/types.js";
 
+export type StrategyState = "scanning" | "accumulating" | "holding" | "exiting" | "paused";
+export type StrategyStatus = "active" | "archived";
+
+export interface Strategy {
+  id: string;
+  name: string;
+  description: string;
+  plan: string;
+  allocation: number;
+  state: StrategyState;
+  status: StrategyStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface StrategyStore {
+  list(filter?: { status?: StrategyStatus }): Promise<Strategy[]>;
+  get(id: string): Promise<Strategy | null>;
+  upsert(strategy: Strategy): Promise<void>;
+  setStatus(id: string, status: StrategyStatus): Promise<void>;
+  setState(id: string, state: StrategyState): Promise<void>;
+  updatePlan(id: string, plan: string): Promise<void>;
+}
+
 export interface ConversationMeta {
   id: string;
   title: string;
@@ -62,4 +86,5 @@ export interface StorageProvider {
   triggerAudit: TriggerAuditStore;
   schedules: ScheduleStore;
   scheduleRuns: ScheduleRunStore;
+  strategies: StrategyStore;
 }

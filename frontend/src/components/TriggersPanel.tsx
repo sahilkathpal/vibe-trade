@@ -33,6 +33,12 @@ interface Trigger {
   status: TriggerStatus;
   firedAt?: string;
   outcomeId?: string;
+  strategyId?: string;
+}
+
+interface Strategy {
+  id: string;
+  name: string;
 }
 
 interface TriggerAuditEntry {
@@ -76,6 +82,14 @@ function ScopeBadge({ scope }: { scope: string }) {
   );
 }
 
+function StrategyTag({ name }: { name: string }) {
+  return (
+    <span className="px-1.5 py-0.5 rounded text-xs bg-violet-900/40 text-violet-300 border border-violet-800/40 flex items-center gap-1">
+      <span className="opacity-60">↗</span>{name}
+    </span>
+  );
+}
+
 function ActionTypeBadge({ type }: { type: string }) {
   const isHard = type === "hard_order";
   return (
@@ -93,7 +107,7 @@ function ActionTypeBadge({ type }: { type: string }) {
 
 // ── Active Triggers Tab ────────────────────────────────────────────────────────
 
-function ActiveTriggerCard({ trigger }: { trigger: Trigger }) {
+function ActiveTriggerCard({ trigger, strategyName }: { trigger: Trigger; strategyName?: string }) {
   const conditionLabel =
     trigger.condition.mode === "code"
       ? trigger.condition.expression
@@ -107,6 +121,7 @@ function ActiveTriggerCard({ trigger }: { trigger: Trigger }) {
           <div className="flex flex-wrap gap-1.5 items-center">
             <ScopeBadge scope={trigger.scope} />
             <ActionTypeBadge type={trigger.action.type} />
+            {strategyName && <StrategyTag name={strategyName} />}
           </div>
         </div>
         <span className="flex-shrink-0 w-2 h-2 rounded-full bg-green-400 mt-1.5" title="Active" />
@@ -249,16 +264,22 @@ export function TriggersPanel() {
   const [subTab, setSubTab] = useState<"active" | "history">("active");
   const [triggers, setTriggers] = useState<Trigger[]>([]);
   const [audit, setAudit] = useState<TriggerAuditEntry[]>([]);
+  const [strategyMap, setStrategyMap] = useState<Record<string, string>>({});
   const [loadingTriggers, setLoadingTriggers] = useState(true);
   const [loadingAudit, setLoadingAudit] = useState(true);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const fetchTriggers = useCallback(async () => {
     try {
-      const res = await fetch(`${BACKEND_URL}/api/triggers`);
-      if (!res.ok) return;
-      const data = (await res.json()) as Trigger[];
-      setTriggers(data);
+      const [triggersRes, strategiesRes] = await Promise.all([
+        fetch(`${BACKEND_URL}/api/triggers`),
+        fetch(`${BACKEND_URL}/api/strategies`),
+      ]);
+      if (triggersRes.ok) setTriggers((await triggersRes.json()) as Trigger[]);
+      if (strategiesRes.ok) {
+        const strategies = (await strategiesRes.json()) as Strategy[];
+        setStrategyMap(Object.fromEntries(strategies.map(s => [s.id, s.name])));
+      }
     } catch {
       // ignore
     } finally {
@@ -331,7 +352,7 @@ export function TriggersPanel() {
             ) : (
               <div className="p-4 space-y-3">
                 {triggers.map((t) => (
-                  <ActiveTriggerCard key={t.id} trigger={t} />
+                  <ActiveTriggerCard key={t.id} trigger={t} strategyName={t.strategyId ? strategyMap[t.strategyId] : undefined} />
                 ))}
               </div>
             )}

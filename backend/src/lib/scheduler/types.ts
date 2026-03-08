@@ -11,6 +11,7 @@ export interface Schedule {
   lastRunAt?: string;
   nextRunAt: string;
   createdAt: string;
+  strategyId?: string;
 }
 
 export type ScheduleRunOutcome =
@@ -25,4 +26,5 @@ export interface ScheduleRun {
   startedAt: string;
   completedAt: string;
   outcome: ScheduleRunOutcome;
+  strategyId?: string;
 }

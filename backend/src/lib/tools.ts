@@ -1,7 +1,7 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import { parseExpression } from "cron-parser";
 import { DhanClient } from "./dhan/client.js";
-import type { MemoryStore, TriggerStore, ScheduleStore } from "./storage/index.js";
+import type { MemoryStore, TriggerStore, ScheduleStore, StrategyStore } from "./storage/index.js";
 import type { TradeArgs } from "./heartbeat/types.js";
 import {
   getSecurityId,
@@ -837,6 +837,7 @@ Examples:
             required: ["type"],
           },
           expiresAt: { type: "string", description: "ISO date string — trigger auto-expires if condition never fires by this time" },
+          strategy_id: { type: "string", description: "Optional strategy ID to link this trigger to a strategy" },
         },
         required: ["name", "scope", "watchSymbols", "condition", "action"],
       },
@@ -855,6 +856,7 @@ Examples:
         createdAt: new Date().toISOString(),
         active: true,
         status: "active" as const,
+        ...(args.strategy_id ? { strategyId: args.strategy_id as string } : {}),
       };
       await store.upsert(trigger);
       return JSON.stringify({ success: true, triggerId: trigger.id, name: trigger.name });
@@ -922,6 +924,7 @@ export function createRegisterScheduleTool(store: ScheduleStore): ToolDefinition
           cronExpression: { type: "string", description: "5-field cron expression in IST (e.g. '15 9 * * 1-5' for 9:15am Mon-Fri)" },
           tradingDaysOnly: { type: "boolean", description: "If true, skip NSE holidays and weekends" },
           prompt: { type: "string", description: "The instruction for the LLM when this schedule fires (e.g. 'Read latest news, find intraday opportunities, queue promising trades for approval')" },
+          strategy_id: { type: "string", description: "Optional strategy ID to link this schedule to a strategy" },
         },
         required: ["name", "description", "cronExpression", "tradingDaysOnly", "prompt"],
       },
@@ -956,6 +959,7 @@ export function createRegisterScheduleTool(store: ScheduleStore): ToolDefinition
         status: "active" as const,
         nextRunAt,
         createdAt: now.toISOString(),
+        ...(args.strategy_id ? { strategyId: args.strategy_id as string } : {}),
       };
 
       await store.upsert(schedule);
@@ -1059,4 +1063,132 @@ export function createDeleteScheduleTool(store: ScheduleStore): ToolDefinition {
       return `Schedule "${schedule.name}" deleted.`;
     },
   };
+}
+
+// ── STRATEGY TOOLS ────────────────────────────────────────────────────────────
+
+export function createStrategyTools(store: StrategyStore): ToolDefinition[] {
+  const createStrategy: ToolDefinition = {
+    requiresApproval: false,
+    definition: {
+      name: "create_strategy",
+      description: `Create a named trading strategy with a capital allocation and a written plan.
+
+The plan field should describe the full trading policy: objectives, entry/exit signals, position sizing, and risk rules. After creating a strategy, analyze the plan text and propose concrete triggers and schedules that would implement it. Describe each one, ask the user to confirm, and if confirmed call register_trigger/register_schedule linked to this strategy's id.`,
+      input_schema: {
+        type: "object",
+        properties: {
+          name: { type: "string", description: "Short strategy name, e.g. 'Large-Cap Momentum'" },
+          description: { type: "string", description: "One-sentence summary of what the strategy does" },
+          plan: { type: "string", description: "Full trading plan text: objectives, entry/exit signals, position sizing, risk rules" },
+          allocation: { type: "number", description: "Capital envelope in INR, e.g. 500000 for ₹5L" },
+        },
+        required: ["name", "description", "plan", "allocation"],
+      },
+    },
+    handler: async (args) => {
+      const { randomUUID } = await import("crypto");
+      const now = new Date().toISOString();
+      const strategy = {
+        id: randomUUID(),
+        name: args.name as string,
+        description: args.description as string,
+        plan: args.plan as string,
+        allocation: args.allocation as number,
+        state: "scanning" as const,
+        status: "active" as const,
+        createdAt: now,
+        updatedAt: now,
+      };
+      await store.upsert(strategy);
+      return JSON.stringify({ success: true, strategyId: strategy.id, name: strategy.name });
+    },
+  };
+
+  const updateStrategyState: ToolDefinition = {
+    requiresApproval: false,
+    definition: {
+      name: "update_strategy_state",
+      description: "Update the operational state of a strategy (scanning, accumulating, holding, exiting, paused).",
+      input_schema: {
+        type: "object",
+        properties: {
+          strategy_id: { type: "string", description: "Strategy ID" },
+          state: { type: "string", enum: ["scanning", "accumulating", "holding", "exiting", "paused"] },
+        },
+        required: ["strategy_id", "state"],
+      },
+    },
+    handler: async (args) => {
+      const { strategy_id, state } = args as { strategy_id: string; state: import("./storage/types.js").StrategyState };
+      const strategy = await store.get(strategy_id);
+      if (!strategy) return JSON.stringify({ error: `Strategy ${strategy_id} not found` });
+      await store.setState(strategy_id, state);
+      return JSON.stringify({ success: true, strategyId: strategy_id, state });
+    },
+  };
+
+  const updateStrategyPlan: ToolDefinition = {
+    requiresApproval: false,
+    definition: {
+      name: "update_strategy_plan",
+      description: "Update the trading plan text for a strategy. The next reasoning job will use the updated plan.",
+      input_schema: {
+        type: "object",
+        properties: {
+          strategy_id: { type: "string", description: "Strategy ID" },
+          plan: { type: "string", description: "New full plan text (replaces existing)" },
+        },
+        required: ["strategy_id", "plan"],
+      },
+    },
+    handler: async (args) => {
+      const { strategy_id, plan } = args as { strategy_id: string; plan: string };
+      const strategy = await store.get(strategy_id);
+      if (!strategy) return JSON.stringify({ error: `Strategy ${strategy_id} not found` });
+      await store.updatePlan(strategy_id, plan);
+      return JSON.stringify({ success: true, strategyId: strategy_id });
+    },
+  };
+
+  const listStrategies: ToolDefinition = {
+    requiresApproval: false,
+    definition: {
+      name: "list_strategies",
+      description: "List all active strategies.",
+      input_schema: {
+        type: "object",
+        properties: {},
+      },
+    },
+    handler: async () => {
+      const strategies = await store.list({ status: "active" });
+      if (strategies.length === 0) return "No active strategies found.";
+      return JSON.stringify(strategies, null, 2);
+    },
+  };
+
+  const archiveStrategy: ToolDefinition = {
+    requiresApproval: false,
+    definition: {
+      name: "archive_strategy",
+      description: "Archive a strategy. It will no longer appear in the active list.",
+      input_schema: {
+        type: "object",
+        properties: {
+          strategy_id: { type: "string", description: "Strategy ID to archive" },
+        },
+        required: ["strategy_id"],
+      },
+    },
+    handler: async (args) => {
+      const { strategy_id } = args as { strategy_id: string };
+      const strategy = await store.get(strategy_id);
+      if (!strategy) return JSON.stringify({ error: `Strategy ${strategy_id} not found` });
+      await store.setStatus(strategy_id, "archived");
+      return JSON.stringify({ success: true, strategyId: strategy_id, status: "archived" });
+    },
+  };
+
+  return [createStrategy, updateStrategyState, updateStrategyPlan, listStrategies, archiveStrategy];
 }

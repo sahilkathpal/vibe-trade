@@ -1,6 +1,6 @@
 import { randomUUID } from "crypto";
 import type { DhanClient } from "../dhan/client.js";
-import type { TriggerStore, ApprovalStore, TriggerAuditStore, MemoryStore } from "../storage/index.js";
+import type { TriggerStore, ApprovalStore, TriggerAuditStore, MemoryStore, StrategyStore } from "../storage/index.js";
 import { buildSnapshot } from "./snapshot.js";
 import { evaluateCodeTriggers, evaluateLlmTriggers, evaluateTimeTriggers } from "./evaluator.js";
 import { runReasoningJob } from "./runner.js";
@@ -19,6 +19,7 @@ export class HeartbeatService {
     private readonly triggerAudit: TriggerAuditStore,
     private readonly memory: MemoryStore,
     private readonly intervalMs: number = 60_000,
+    private readonly strategyStore?: StrategyStore,
   ) {}
 
   start(): void {
@@ -136,7 +137,7 @@ export class HeartbeatService {
           await this.triggers.setStatus(trigger.id, "fired", { firedAt: now });
           this.activeJobs++;
           console.log(`[heartbeat] reasoning job started for trigger ${trigger.id}`);
-          runReasoningJob(trigger, snapshot, this.dhan, this.triggers, this.approvals, this.triggerAudit, this.memory)
+          runReasoningJob(trigger, snapshot, this.dhan, this.triggers, this.approvals, this.triggerAudit, this.memory, this.strategyStore)
             .catch(err => console.error(`[heartbeat] reasoning job error for ${trigger.id}:`, err))
             .finally(() => { this.activeJobs--; });
         }

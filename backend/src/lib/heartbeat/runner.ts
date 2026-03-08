@@ -1,7 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { randomUUID } from "crypto";
 import type { DhanClient } from "../dhan/client.js";
-import type { TriggerStore, ApprovalStore, TriggerAuditStore, MemoryStore } from "../storage/index.js";
+import type { TriggerStore, ApprovalStore, TriggerAuditStore, MemoryStore, StrategyStore } from "../storage/index.js";
 import type { Trigger, SystemSnapshot, TradeArgs } from "./types.js";
 import { getSecurityId } from "../dhan/instruments.js";
 import { TOOLS } from "../tools.js";
@@ -126,9 +126,37 @@ export async function runReasoningJob(
   approvalStore: ApprovalStore,
   auditStore: TriggerAuditStore,
   memory: MemoryStore,
+  strategyStore?: StrategyStore,
 ): Promise<void> {
   const memoryContent = await memory.read().catch(() => "");
-  const systemPrompt = RUNNER_SYSTEM + (memoryContent ? `\n\n<memory>\n${memoryContent}\n</memory>` : "");
+  let systemPrompt = RUNNER_SYSTEM + (memoryContent ? `\n\n<memory>\n${memoryContent}\n</memory>` : "");
+
+  // Inject strategy context if trigger is linked to a strategy
+  if (trigger.strategyId && strategyStore) {
+    const strategy = await strategyStore.get(trigger.strategyId).catch(() => null);
+    if (strategy) {
+      const activeTriggers = await triggerStore.list({ status: "active" });
+      const linkedTriggers = activeTriggers.filter(t => t.strategyId === strategy.id);
+      const triggersBlock = linkedTriggers.length > 0
+        ? linkedTriggers.map(t => `- "${t.name}": ${JSON.stringify(t.condition)} → ${t.action.type}`).join("\n")
+        : "None";
+      const availableBalance = snapshot.funds?.availableBalance ?? null;
+      const fundsLine = availableBalance !== null
+        ? `Available balance: ₹${availableBalance.toLocaleString("en-IN")}  |  Allocation: ₹${strategy.allocation.toLocaleString("en-IN")}${availableBalance < strategy.allocation ? "  ⚠️ Balance is below strategy allocation" : ""}`
+        : `Allocation: ₹${strategy.allocation.toLocaleString("en-IN")}  (live balance unavailable)`;
+      systemPrompt += `\n\n<strategy name="${strategy.name}">
+State: ${strategy.state}  |  ${fundsLine}
+
+## Plan
+${strategy.plan}
+
+## Active Triggers
+${triggersBlock}
+
+IMPORTANT: Before queuing any trade, confirm the required capital does not exceed the available balance shown above. If funds are insufficient, call no_action with a clear reason.
+</strategy>`;
+    }
+  }
 
   const allTools: Anthropic.Tool[] = [
     ...READ_ONLY_TOOLS.map(name => TOOLS[name]!.definition),
@@ -201,6 +229,7 @@ Analyze the situation and take appropriate action.`;
           reasoning: args.reasoning as string,
           tradeArgs, status: "pending",
           createdAt: new Date().toISOString(), expiresAt: expiry,
+          ...(trigger.strategyId ? { strategyId: trigger.strategyId } : {}),
         });
         console.log(`[heartbeat] queued trade approval ${approvalId}`);
         await auditStore.append({

@@ -104,6 +104,13 @@ interface ChatProps {
   onTurnComplete?: () => void;
 }
 
+interface Strategy {
+  id: string;
+  name: string;
+}
+
+const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:3001";
+
 export function Chat({ conversationId, onTurnComplete }: ChatProps) {
   const [items, setItems] = useState<ChatItem[]>([]);
   const [input, setInput] = useState("");
@@ -113,6 +120,31 @@ export function Chat({ conversationId, onTurnComplete }: ChatProps) {
   const wsRef = useRef<WebSocket | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const currentAssistantIdRef = useRef<string | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+
+  // @mention autocomplete state
+  const [mentionQuery, setMentionQuery] = useState<string | null>(null);
+  const [mentionStrategies, setMentionStrategies] = useState<Strategy[]>([]);
+  const [mentionIndex, setMentionIndex] = useState(0);
+  const strategyCacheRef = useRef<Strategy[]>([]);
+  const strategyCacheTimeRef = useRef<number>(0);
+
+  const fetchStrategies = useCallback(async (): Promise<Strategy[]> => {
+    const now = Date.now();
+    if (now - strategyCacheTimeRef.current < 30_000 && strategyCacheRef.current.length > 0) {
+      return strategyCacheRef.current;
+    }
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/strategies`);
+      if (!res.ok) return strategyCacheRef.current;
+      const data = (await res.json()) as Strategy[];
+      strategyCacheRef.current = data;
+      strategyCacheTimeRef.current = now;
+      return data;
+    } catch {
+      return strategyCacheRef.current;
+    }
+  }, []);
 
   // Load history from the backend whenever conversationId changes
   useEffect(() => {
@@ -272,7 +304,71 @@ export function Chat({ conversationId, onTurnComplete }: ChatProps) {
     );
   }, []);
 
+  const handleInputChange = useCallback(async (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const value = e.target.value;
+    setInput(value);
+
+    // Detect @mention at cursor
+    const cursor = e.target.selectionStart ?? value.length;
+    const textUpToCursor = value.slice(0, cursor);
+    const mentionMatch = textUpToCursor.match(/@([\w\s-]*)$/);
+    if (mentionMatch) {
+      const query = mentionMatch[1].toLowerCase();
+      const strategies = await fetchStrategies();
+      const filtered = strategies.filter(s => s.name.toLowerCase().includes(query)).slice(0, 5);
+      setMentionQuery(mentionMatch[1]);
+      setMentionStrategies(filtered);
+      setMentionIndex(0);
+    } else {
+      setMentionQuery(null);
+      setMentionStrategies([]);
+    }
+  }, [fetchStrategies]);
+
+  const applyMention = useCallback((strategy: Strategy) => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    const cursor = textarea.selectionStart ?? input.length;
+    const textUpToCursor = input.slice(0, cursor);
+    const mentionMatch = textUpToCursor.match(/@([\w\s-]*)$/);
+    if (!mentionMatch) return;
+    const before = textUpToCursor.slice(0, textUpToCursor.length - mentionMatch[0].length);
+    const after = input.slice(cursor);
+    const newValue = `${before}@${strategy.name}${after}`;
+    setInput(newValue);
+    setMentionQuery(null);
+    setMentionStrategies([]);
+    setTimeout(() => {
+      const pos = before.length + strategy.name.length + 1;
+      textarea.setSelectionRange(pos, pos);
+      textarea.focus();
+    }, 0);
+  }, [input]);
+
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (mentionQuery !== null && mentionStrategies.length > 0) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setMentionIndex(i => Math.min(i + 1, mentionStrategies.length - 1));
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setMentionIndex(i => Math.max(i - 1, 0));
+        return;
+      }
+      if (e.key === "Enter" || e.key === "Tab") {
+        e.preventDefault();
+        const selected = mentionStrategies[mentionIndex];
+        if (selected) applyMention(selected);
+        return;
+      }
+      if (e.key === "Escape") {
+        setMentionQuery(null);
+        setMentionStrategies([]);
+        return;
+      }
+    }
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       sendMessage();
@@ -407,12 +503,29 @@ export function Chat({ conversationId, onTurnComplete }: ChatProps) {
 
       {/* Input bar */}
       <div className="border-t border-gray-800/60 bg-gray-950 px-4 py-4">
-        <div className="flex gap-2 items-end max-w-3xl mx-auto">
+        <div className="flex gap-2 items-end max-w-3xl mx-auto relative">
+          {/* @mention autocomplete dropdown */}
+          {mentionQuery !== null && mentionStrategies.length > 0 && (
+            <div className="absolute bottom-full left-0 mb-2 w-64 bg-gray-800 border border-gray-600 rounded-lg shadow-lg overflow-hidden z-50">
+              {mentionStrategies.map((s, i) => (
+                <button
+                  key={s.id}
+                  onMouseDown={(e) => { e.preventDefault(); applyMention(s); }}
+                  className={`w-full text-left px-3 py-2 text-sm transition-colors ${
+                    i === mentionIndex ? "bg-gray-700 text-white" : "text-gray-300 hover:bg-gray-700/60"
+                  }`}
+                >
+                  @{s.name}
+                </button>
+              ))}
+            </div>
+          )}
           <textarea
+            ref={textareaRef}
             value={input}
-            onChange={(e) => setInput(e.target.value)}
+            onChange={handleInputChange}
             onKeyDown={handleKeyDown}
-            placeholder={connected ? "Message VibeTrade..." : "Connecting to backend..."}
+            placeholder={connected ? "Message VibeTrade... (type @ to mention a strategy)" : "Connecting to backend..."}
             disabled={isDisabled}
             rows={1}
             className="flex-1 resize-none rounded-xl bg-gray-800 border border-gray-700 text-gray-100 placeholder-gray-500 px-4 py-3 text-sm focus:outline-none focus:border-blue-500/60 focus:ring-1 focus:ring-blue-500/20 transition-all disabled:opacity-40 disabled:cursor-not-allowed leading-relaxed"
