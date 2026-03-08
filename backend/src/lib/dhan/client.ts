@@ -65,10 +65,10 @@ export class DhanClient {
     return data as T;
   }
 
-  async getQuote(securityIds: string[]): Promise<unknown> {
+  async getQuote(securityIds: string[], segment: "NSE_EQ" | "IDX_I" = "NSE_EQ"): Promise<unknown> {
     // Dhan v2 market quote: POST /marketfeed/ltp
     return this.request("POST", "/marketfeed/ltp", {
-      NSE_EQ: securityIds,
+      [segment]: securityIds,
     });
   }
 
@@ -133,5 +133,39 @@ export class DhanClient {
 
   async cancelOrder(orderId: string): Promise<unknown> {
     return this.request("DELETE", `/orders/${orderId}`);
+  }
+
+  async getHistory(
+    securityId: string,
+    interval: "1" | "5" | "15" | "25" | "60" | "D",
+    fromDate: string,
+    toDate: string,
+    exchangeSegment: "NSE_EQ" | "IDX_I" = "NSE_EQ",
+    instrument: "EQUITY" | "INDEX" = "EQUITY"
+  ): Promise<unknown> {
+    if (interval === "D") {
+      return this.request("POST", "/charts/historical", {
+        securityId,
+        exchangeSegment,
+        instrument,
+        expiryCode: 0,
+        fromDate,
+        toDate,
+      });
+    }
+    return this.request("POST", "/charts/intraday", {
+      securityId,
+      exchangeSegment,
+      instrument,
+      interval,
+      fromDate,
+      toDate,
+    });
+  }
+
+  async getMarketDepth(securityId: string): Promise<unknown> {
+    return this.request("POST", "/marketfeed/full", {
+      NSE_EQ: [securityId],
+    });
   }
 }

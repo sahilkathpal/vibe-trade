@@ -109,13 +109,16 @@ export function Chat() {
   const currentAssistantIdRef = useRef<string | null>(null);
 
   const appendText = useCallback((text: string) => {
-    setItems((prev) => {
-      const id = currentAssistantIdRef.current;
-      if (!id) return prev;
-      return prev.map((item) =>
+    // Capture the ref value NOW (at event-arrival time), not inside the setItems
+    // callback. React 18 batches state updates, so by the time the callback runs,
+    // a subsequent "done" event may have already nullified the ref.
+    const id = currentAssistantIdRef.current;
+    if (!id) return;
+    setItems((prev) =>
+      prev.map((item) =>
         item.id === id ? { ...item, content: item.content + text } : item
-      );
-    });
+      )
+    );
   }, []);
 
   const addItem = useCallback((item: ChatItem) => {

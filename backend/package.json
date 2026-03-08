@@ -13,7 +13,10 @@
     "@fastify/websocket": "^11.0.0",
     "csv-parse": "^5.5.6",
     "dotenv": "^17.3.1",
-    "fastify": "^5.0.0"
+    "fastify": "^5.0.0",
+    "rss-parser": "^3.13.0",
+    "technicalindicators": "^3.1.0",
+    "yahoo-finance2": "^3.13.2"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

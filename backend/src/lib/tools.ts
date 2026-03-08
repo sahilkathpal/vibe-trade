@@ -1,6 +1,18 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import { DhanClient } from "./dhan/client.js";
-import { getSecurityId, getSecurityIds } from "./dhan/instruments.js";
+import {
+  getSecurityId,
+  getSecurityIds,
+  searchInstruments,
+  getIndexConstituents,
+  getIndexConstituentInfo,
+  getIndexSecurityId,
+} from "./dhan/instruments.js";
+import { computeIndicators } from "./indicators.js";
+import type { Candle } from "./indicators.js";
+import { getFundamentals } from "./yahoo.js";
+import { fetchNews } from "./news.js";
+import { getMarketStatus, isTradingDay, getUpcomingHolidays } from "./market-calendar.js";
 
 export interface ToolDefinition {
   definition: Anthropic.Tool;
@@ -20,6 +32,67 @@ function describeApproval(tool: string, args: Record<string, unknown>): string {
 
 export function getApprovalDescription(tool: string, args: Record<string, unknown>): string {
   return describeApproval(tool, args);
+}
+
+// Helper: parse Dhan chart response into Candle[]
+function parseDhanCandles(data: unknown): Candle[] {
+  const d = data as Record<string, unknown>;
+  const timestamps = (d["timestamp"] as number[]) ?? [];
+  const opens = (d["open"] as number[]) ?? [];
+  const highs = (d["high"] as number[]) ?? [];
+  const lows = (d["low"] as number[]) ?? [];
+  const closes = (d["close"] as number[]) ?? [];
+  const volumes = (d["volume"] as number[]) ?? [];
+
+  return timestamps.map((ts, i) => ({
+    timestamp: ts,
+    open: opens[i] ?? 0,
+    high: highs[i] ?? 0,
+    low: lows[i] ?? 0,
+    close: closes[i] ?? 0,
+    volume: volumes[i] ?? 0,
+  }));
+}
+
+// Helper: compute date range strings
+function dateRange(days: number): { fromDate: string; toDate: string } {
+  const to = new Date();
+  const from = new Date();
+  from.setDate(from.getDate() - days);
+  const fmt = (d: Date) => d.toISOString().split("T")[0];
+  return { fromDate: fmt(from), toDate: fmt(to) };
+}
+
+// Fallback security IDs for well-known indices (in case IDX_I not in instrument master)
+const FALLBACK_INDEX_IDS: Record<string, string> = {
+  NIFTY50:   "13",
+  BANKNIFTY: "25",
+  FINNIFTY:  "27",
+};
+
+// Resolve a symbol to its security ID, exchange segment, and instrument type.
+// Checks the Dhan IDX_I map first (covers all indices in the instrument master),
+// then falls back to hardcoded IDs for the 3 major indices, then treats as equity.
+async function resolveInstrument(symbol: string): Promise<{
+  securityId: string;
+  exchangeSegment: "NSE_EQ" | "IDX_I";
+  instrument: "EQUITY" | "INDEX";
+}> {
+  let normalized = symbol.toUpperCase().replace(/[\s\-_]/g, "");
+  if (normalized === "NIFTYBANK") normalized = "BANKNIFTY";
+  if (normalized === "NIFTY") normalized = "NIFTY50";
+
+  // Try Dhan instrument master IDX_I entries first (dynamic — covers all indices)
+  let securityId = await getIndexSecurityId(normalized);
+  // Fallback for well-known indices in case IDX_I rows weren't parsed
+  if (!securityId) securityId = FALLBACK_INDEX_IDS[normalized];
+
+  if (securityId) {
+    return { securityId, exchangeSegment: "IDX_I", instrument: "INDEX" };
+  }
+
+  const equityId = await getSecurityId(symbol);
+  return { securityId: equityId, exchangeSegment: "NSE_EQ", instrument: "EQUITY" };
 }
 
 export const TOOLS: Record<string, ToolDefinition> = {
@@ -52,21 +125,49 @@ export const TOOLS: Record<string, ToolDefinition> = {
     requiresApproval: false,
     definition: {
       name: "get_index_quote",
-      description: "Get live price for a major Indian index: NIFTY50, BANKNIFTY, or FINNIFTY.",
+      description:
+        "Get live price for any NSE index, e.g. NIFTY50, BANKNIFTY, FINNIFTY, NIFTYIT, NIFTYAUTO, NIFTYPHARMA, NIFTYFMCG.",
       input_schema: {
         type: "object",
         properties: {
           index: {
             type: "string",
-            description: "Index name. One of: NIFTY50, BANKNIFTY, FINNIFTY",
+            description: "NSE index name, e.g. NIFTY50, BANKNIFTY, NIFTYIT, NIFTYAUTO",
           },
         },
         required: ["index"],
       },
     },
     handler: async (args, client) => {
-      const result = await client.getIndexQuote(args.index as string);
+      const { securityId, exchangeSegment } = await resolveInstrument(args.index as string);
+      if (exchangeSegment !== "IDX_I") {
+        return JSON.stringify({ error: `'${args.index}' is not a recognised index symbol.` });
+      }
+      const result = await client.getQuote([securityId], "IDX_I");
       return JSON.stringify(result, null, 2);
+    },
+  },
+
+  get_index_constituents: {
+    requiresApproval: false,
+    definition: {
+      name: "get_index_constituents",
+      description:
+        "List all constituent stocks of an NSE index with their company name and industry. Works for any Nifty index, e.g. NIFTY50, BANKNIFTY, NIFTYAUTO, NIFTYIT, NIFTYPHARMA, NIFTY500.",
+      input_schema: {
+        type: "object",
+        properties: {
+          index: {
+            type: "string",
+            description: "NSE index name, e.g. NIFTY50, NIFTYAUTO, BANKNIFTY, NIFTYIT",
+          },
+        },
+        required: ["index"],
+      },
+    },
+    handler: async (args, _client) => {
+      const constituents = await getIndexConstituentInfo(args.index as string);
+      return JSON.stringify({ index: (args.index as string).toUpperCase(), count: constituents.length, constituents }, null, 2);
     },
   },
 
@@ -189,6 +290,416 @@ export const TOOLS: Record<string, ToolDefinition> = {
     handler: async (args, client) => {
       const result = await client.cancelOrder(args.order_id as string);
       return JSON.stringify(result, null, 2);
+    },
+  },
+
+  // ── NEW MARKET DATA TOOLS ─────────────────────────────────────────────────
+
+  get_historical_data: {
+    requiresApproval: false,
+    definition: {
+      name: "get_historical_data",
+      description:
+        "Get historical OHLCV candles for an NSE equity or index symbol (e.g. NIFTY50, BANKNIFTY). Supports intraday (1/5/15/60 min) and daily intervals.",
+      input_schema: {
+        type: "object",
+        properties: {
+          symbol: {
+            type: "string",
+            description: "NSE trading symbol or index name, e.g. 'RELIANCE', 'NIFTY50', 'BANKNIFTY'",
+          },
+          interval: {
+            type: "string",
+            enum: ["1", "5", "15", "25", "60", "D"],
+            description: "Candle interval. '1','5','15','25','60' for intraday minutes; 'D' for daily.",
+          },
+          days: {
+            type: "number",
+            description: "Number of past days of data to fetch (max 365 for daily, 30 for intraday).",
+          },
+        },
+        required: ["symbol", "interval", "days"],
+      },
+    },
+    handler: async (args, client) => {
+      const symbol = args.symbol as string;
+      const interval = args.interval as "1" | "5" | "15" | "25" | "60" | "D";
+      const days = Math.min(args.days as number, interval === "D" ? 365 : 30);
+      const { securityId, exchangeSegment, instrument } = await resolveInstrument(symbol);
+      const { fromDate, toDate } = dateRange(days);
+      const raw = await client.getHistory(securityId, interval, fromDate, toDate, exchangeSegment, instrument);
+      const candles = parseDhanCandles(raw);
+      // Return last 200 candles max
+      return JSON.stringify(candles.slice(-200), null, 2);
+    },
+  },
+
+  compute_indicators: {
+    requiresApproval: false,
+    definition: {
+      name: "compute_indicators",
+      description:
+        "Compute technical indicators (RSI, MACD, Bollinger Bands, SMA, EMA, ATR, VWAP) for an NSE equity or index symbol (e.g. NIFTY50, BANKNIFTY).",
+      input_schema: {
+        type: "object",
+        properties: {
+          symbol: {
+            type: "string",
+            description: "NSE trading symbol or index name, e.g. 'TCS', 'NIFTY50', 'BANKNIFTY'",
+          },
+          interval: {
+            type: "string",
+            enum: ["1", "5", "15", "25", "60", "D"],
+            description: "Candle interval. '1','5','15','25','60' for intraday minutes; 'D' for daily.",
+          },
+          days: {
+            type: "number",
+            description: "Number of past days of data to base calculations on.",
+          },
+        },
+        required: ["symbol", "interval", "days"],
+      },
+    },
+    handler: async (args, client) => {
+      const symbol = args.symbol as string;
+      const interval = args.interval as "1" | "5" | "15" | "25" | "60" | "D";
+      const days = Math.min(args.days as number, interval === "D" ? 365 : 30);
+      const { securityId, exchangeSegment, instrument } = await resolveInstrument(symbol);
+      const { fromDate, toDate } = dateRange(days);
+      const raw = await client.getHistory(securityId, interval, fromDate, toDate, exchangeSegment, instrument);
+      const candles = parseDhanCandles(raw);
+      if (candles.length < 26) {
+        return JSON.stringify({ error: "Insufficient data for indicators. Try more days or a broader interval." });
+      }
+      const result = computeIndicators(candles);
+      return JSON.stringify({ symbol, interval, candles_analyzed: candles.length, indicators: result }, null, 2);
+    },
+  },
+
+  get_fundamentals: {
+    requiresApproval: false,
+    definition: {
+      name: "get_fundamentals",
+      description:
+        "Get fundamental data for an NSE equity: PE ratio, EPS, growth, ROE, debt/equity, market cap, sector, 52-week range.",
+      input_schema: {
+        type: "object",
+        properties: {
+          symbol: {
+            type: "string",
+            description: "NSE equity trading symbol, e.g. 'INFY'",
+          },
+        },
+        required: ["symbol"],
+      },
+    },
+    handler: async (args, _client) => {
+      const result = await getFundamentals(args.symbol as string);
+      return JSON.stringify(result, null, 2);
+    },
+  },
+
+  fetch_news: {
+    requiresApproval: false,
+    definition: {
+      name: "fetch_news",
+      description: "Fetch latest financial news headlines from LiveMint RSS feeds.",
+      input_schema: {
+        type: "object",
+        properties: {
+          category: {
+            type: "string",
+            enum: ["markets", "economy", "companies", "finance"],
+            description: "News category. Default: 'markets'.",
+          },
+          limit: {
+            type: "number",
+            description: "Maximum number of headlines to return (1–20). Default: 10.",
+          },
+        },
+        required: [],
+      },
+    },
+    handler: async (args, _client) => {
+      const category = (args.category as "markets" | "economy" | "companies" | "finance") ?? "markets";
+      const limit = Math.min(Math.max((args.limit as number) ?? 10, 1), 20);
+      const news = await fetchNews(category, limit);
+      return JSON.stringify(news, null, 2);
+    },
+  },
+
+  get_market_status: {
+    requiresApproval: false,
+    definition: {
+      name: "get_market_status",
+      description:
+        "Get current NSE market status: session phase (pre_market/open/post_market/closed), time in IST, minutes to open/close, and next market open.",
+      input_schema: {
+        type: "object",
+        properties: {},
+        required: [],
+      },
+    },
+    handler: async (_args, _client) => {
+      const status = getMarketStatus();
+      return JSON.stringify(status, null, 2);
+    },
+  },
+
+  is_trading_day: {
+    requiresApproval: false,
+    definition: {
+      name: "is_trading_day",
+      description: "Check if a given date (or today) is an NSE trading day.",
+      input_schema: {
+        type: "object",
+        properties: {
+          date: {
+            type: "string",
+            description: "ISO date string (YYYY-MM-DD). Defaults to today in IST if not provided.",
+          },
+        },
+        required: [],
+      },
+    },
+    handler: async (args, _client) => {
+      const result = isTradingDay(args.date as string | undefined);
+      return JSON.stringify(result, null, 2);
+    },
+  },
+
+  get_upcoming_holidays: {
+    requiresApproval: false,
+    definition: {
+      name: "get_upcoming_holidays",
+      description: "Get the next N upcoming NSE market holidays.",
+      input_schema: {
+        type: "object",
+        properties: {
+          n: {
+            type: "number",
+            description: "Number of upcoming holidays to return. Default: 5.",
+          },
+        },
+        required: [],
+      },
+    },
+    handler: async (args, _client) => {
+      const n = Math.min(Math.max((args.n as number) ?? 5, 1), 20);
+      const holidays = getUpcomingHolidays(n);
+      return JSON.stringify(holidays, null, 2);
+    },
+  },
+
+  search_instruments: {
+    requiresApproval: false,
+    definition: {
+      name: "search_instruments",
+      description: "Search NSE equity instruments by ticker symbol or company name (fuzzy/substring match).",
+      input_schema: {
+        type: "object",
+        properties: {
+          query: {
+            type: "string",
+            description: "Search query, e.g. 'bank', 'reliance', 'HDFC'",
+          },
+          limit: {
+            type: "number",
+            description: "Maximum results to return. Default: 20.",
+          },
+        },
+        required: ["query"],
+      },
+    },
+    handler: async (args, _client) => {
+      const results = await searchInstruments(args.query as string, (args.limit as number) ?? 20);
+      return JSON.stringify(results, null, 2);
+    },
+  },
+
+  get_top_movers: {
+    requiresApproval: false,
+    definition: {
+      name: "get_top_movers",
+      description: "Get top N gainers and losers from a Nifty index basket based on today's price change.",
+      input_schema: {
+        type: "object",
+        properties: {
+          n: {
+            type: "number",
+            description: "Number of top gainers and losers to return each. Default: 5.",
+          },
+          index: {
+            type: "string",
+            description:
+              "NSE index to scan. Any valid Nifty index name, e.g. NIFTY50, BANKNIFTY, NIFTYIT, NIFTYAUTO, NIFTYFMCG, NIFTYPHARMA, NIFTY100, NIFTY500, NIFTYMIDCAP100, NIFTYNEXT50, NIFTYSMALLCAP100. Default: NIFTY50.",
+          },
+        },
+        required: [],
+      },
+    },
+    handler: async (args, client) => {
+      const n = Math.min(Math.max((args.n as number) ?? 5, 1), 25);
+      const index = (args.index as string) ?? "NIFTY50";
+      const securityIds = await getIndexConstituents(index);
+
+      // Fetch quotes in batches of 25
+      const batchSize = 25;
+      const allData: unknown[] = [];
+
+      for (let i = 0; i < securityIds.length; i += batchSize) {
+        const batch = securityIds.slice(i, i + batchSize);
+        const result = await client.getQuote(batch);
+        const nseEq = (result as Record<string, unknown>)["NSE_EQ"];
+        if (Array.isArray(nseEq)) allData.push(...nseEq);
+      }
+
+      type QuoteItem = {
+        tradingSymbol: string;
+        lastPrice: number;
+        previousClose: number;
+        pct_change: number;
+      };
+
+      const items: QuoteItem[] = (allData as Array<Record<string, unknown>>)
+        .filter((q) => q["lastPrice"] && q["previousClose"])
+        .map((q) => ({
+          tradingSymbol: q["tradingSymbol"] as string,
+          lastPrice: q["lastPrice"] as number,
+          previousClose: q["previousClose"] as number,
+          pct_change: +(((q["lastPrice"] as number) - (q["previousClose"] as number)) / (q["previousClose"] as number) * 100).toFixed(2),
+        }));
+
+      items.sort((a, b) => b.pct_change - a.pct_change);
+      const gainers = items.slice(0, n);
+      const losers = items.slice(-n).reverse();
+
+      return JSON.stringify({ index, gainers, losers }, null, 2);
+    },
+  },
+
+  get_market_depth: {
+    requiresApproval: false,
+    definition: {
+      name: "get_market_depth",
+      description: "Get the full bid/ask order book (market depth) for an NSE equity symbol.",
+      input_schema: {
+        type: "object",
+        properties: {
+          symbol: {
+            type: "string",
+            description: "NSE equity trading symbol, e.g. 'HDFC'",
+          },
+        },
+        required: ["symbol"],
+      },
+    },
+    handler: async (args, client) => {
+      const symbol = args.symbol as string;
+      const securityId = await getSecurityId(symbol);
+      const result = await client.getMarketDepth(securityId);
+      return JSON.stringify(result, null, 2);
+    },
+  },
+
+  compare_stocks: {
+    requiresApproval: false,
+    definition: {
+      name: "compare_stocks",
+      description:
+        "Side-by-side comparison of 2–5 NSE equities or indices: live price, PE, EPS, market cap, 52-week range, sector. Indices (e.g. NIFTY50, BANKNIFTY) skip fundamentals.",
+      input_schema: {
+        type: "object",
+        properties: {
+          symbols: {
+            type: "array",
+            items: { type: "string" },
+            minItems: 2,
+            maxItems: 5,
+            description: "2–5 NSE equity symbols or index names to compare, e.g. ['RELIANCE', 'TCS', 'NIFTY50']",
+          },
+        },
+        required: ["symbols"],
+      },
+    },
+    handler: async (args, client) => {
+      const symbols = args.symbols as string[];
+      if (symbols.length < 2 || symbols.length > 5) {
+        return JSON.stringify({ error: "Provide 2–5 symbols for comparison." });
+      }
+
+      // Resolve each symbol to its segment
+      const resolved = await Promise.all(symbols.map((s) => resolveInstrument(s)));
+
+      // Group by segment for batched quote fetches
+      const equityIds: string[] = [];
+      const indexIds: string[] = [];
+      resolved.forEach(({ securityId, exchangeSegment }) => {
+        if (exchangeSegment === "IDX_I") indexIds.push(securityId);
+        else equityIds.push(securityId);
+      });
+
+      // Fetch quotes per segment, merge into quoteMap (keyed by securityId)
+      const quoteMap: Record<string, Record<string, unknown>> = {};
+      const extractQuotes = (result: unknown, segKey: string) => {
+        const items = (result as Record<string, unknown>)[segKey];
+        if (Array.isArray(items)) {
+          for (const q of items as Array<Record<string, unknown>>) {
+            const id = String(q["securityId"] ?? q["security_id"] ?? "");
+            const sym = (q["tradingSymbol"] as string ?? "").toUpperCase();
+            if (id) quoteMap[id] = q;
+            if (sym) quoteMap[sym] = q;
+          }
+        }
+      };
+
+      await Promise.all([
+        equityIds.length > 0
+          ? client.getQuote(equityIds, "NSE_EQ").then((r) => extractQuotes(r, "NSE_EQ"))
+          : Promise.resolve(),
+        indexIds.length > 0
+          ? client.getQuote(indexIds, "IDX_I").then((r) => extractQuotes(r, "IDX_I"))
+          : Promise.resolve(),
+      ]);
+
+      // Fetch fundamentals only for equities
+      const fundamentalsArr = await Promise.all(
+        symbols.map((s, i) =>
+          resolved[i].instrument === "EQUITY"
+            ? getFundamentals(s).catch(() => ({ symbol: s }))
+            : Promise.resolve(null)
+        )
+      );
+
+      const comparison = symbols.map((sym, i) => {
+        const { securityId } = resolved[i];
+        const quote = quoteMap[securityId] ?? quoteMap[sym.toUpperCase()] ?? {};
+        const fund = fundamentalsArr[i] as Record<string, unknown> | null;
+        return {
+          symbol: sym.toUpperCase(),
+          type: resolved[i].instrument,
+          last_price: quote["lastPrice"],
+          change_pct: quote["previousClose"]
+            ? +(((quote["lastPrice"] as number) - (quote["previousClose"] as number)) / (quote["previousClose"] as number) * 100).toFixed(2)
+            : undefined,
+          ...(fund
+            ? {
+                pe_ratio: fund["pe_ratio"],
+                forward_pe: fund["forward_pe"],
+                eps: fund["eps"],
+                market_cap: fund["market_cap"],
+                sector: fund["sector"],
+                industry: fund["industry"],
+                fifty_two_week_high: fund["fifty_two_week_high"],
+                fifty_two_week_low: fund["fifty_two_week_low"],
+                roe: fund["roe"],
+                debt_to_equity: fund["debt_to_equity"],
+              }
+            : {}),
+        };
+      });
+
+      return JSON.stringify(comparison, null, 2);
     },
   },
 };
