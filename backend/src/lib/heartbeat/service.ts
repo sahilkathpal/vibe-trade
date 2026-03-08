@@ -1,6 +1,6 @@
 import { randomUUID } from "crypto";
 import type { DhanClient } from "../dhan/client.js";
-import type { TriggerStore, ApprovalStore, TriggerAuditStore, MemoryStore, StrategyStore } from "../storage/index.js";
+import type { TriggerStore, ApprovalStore, TriggerAuditStore, MemoryStore, StrategyStore, TradeStore } from "../storage/index.js";
 import { buildSnapshot } from "./snapshot.js";
 import { evaluateCodeTriggers, evaluateLlmTriggers, evaluateTimeTriggers } from "./evaluator.js";
 import { runReasoningJob } from "./runner.js";
@@ -20,6 +20,7 @@ export class HeartbeatService {
     private readonly memory: MemoryStore,
     private readonly intervalMs: number = 60_000,
     private readonly strategyStore?: StrategyStore,
+    private readonly tradeStore?: TradeStore,
   ) {}
 
   start(): void {
@@ -118,6 +119,22 @@ export class HeartbeatService {
               firedAt: now, snapshotAtFire: snapshot, action: trigger.action,
               outcome: { type: "hard_order_placed", orderId },
             });
+            if (this.tradeStore) {
+              await this.tradeStore.append({
+                id: randomUUID(),
+                orderId,
+                symbol: tradeArgs.symbol.toUpperCase(),
+                securityId,
+                transactionType: tradeArgs.transaction_type,
+                quantity: tradeArgs.quantity,
+                orderType: tradeArgs.order_type,
+                requestedPrice: tradeArgs.price,
+                status: "pending",
+                strategyId: trigger.strategyId,
+                note: `Auto-placed by trigger: ${trigger.name}`,
+                createdAt: now,
+              });
+            }
             console.log(`[heartbeat] hard_order placed: ${orderId} for trigger ${trigger.id}`);
           } catch (err) {
             const error = err instanceof Error ? err.message : String(err);

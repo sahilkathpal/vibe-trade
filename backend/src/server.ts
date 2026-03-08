@@ -36,12 +36,13 @@ async function start() {
     approvals: storage.approvals,
     schedules: storage.schedules,
     strategies: storage.strategies,
+    trades: storage.trades,
   });
   await fastify.register(conversationsRoute, { store: storage.conversations });
   await fastify.register(approvalsRoute, { approvals: storage.approvals, triggers: storage.triggers });
   await fastify.register(triggersRoute, { triggers: storage.triggers, triggerAudit: storage.triggerAudit });
   await fastify.register(schedulesRoute, { schedules: storage.schedules, scheduleRuns: storage.scheduleRuns });
-  await fastify.register(strategiesRoute, { strategies: storage.strategies, triggers: storage.triggers, schedules: storage.schedules });
+  await fastify.register(strategiesRoute, { strategies: storage.strategies, triggers: storage.triggers, schedules: storage.schedules, trades: storage.trades });
 
   fastify.get("/health", async () => ({ ok: true }));
 
@@ -57,7 +58,7 @@ async function start() {
   let heartbeat: HeartbeatService | null = null;
   try {
     const dhan = new DhanClient();
-    heartbeat = new HeartbeatService(dhan, storage.triggers, storage.approvals, storage.triggerAudit, storage.memory, 60_000, storage.strategies);
+    heartbeat = new HeartbeatService(dhan, storage.triggers, storage.approvals, storage.triggerAudit, storage.memory, 60_000, storage.strategies, storage.trades);
     heartbeat.start();
   } catch (err) {
     console.warn("[heartbeat] Failed to start (likely missing DHAN env vars):", (err as Error).message);

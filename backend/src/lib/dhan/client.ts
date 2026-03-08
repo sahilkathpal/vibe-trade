@@ -168,4 +168,8 @@ export class DhanClient {
       NSE_EQ: [securityId],
     });
   }
+
+  async getTradebook(): Promise<unknown> {
+    return this.request("GET", "/tradebook");
+  }
 }

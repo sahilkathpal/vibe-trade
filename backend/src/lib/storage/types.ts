@@ -78,6 +78,39 @@ export interface ScheduleRunStore {
   list(limit?: number): Promise<ScheduleRun[]>;
 }
 
+export type TradeStatus = "pending" | "filled" | "cancelled" | "rejected";
+
+export interface TradeRecord {
+  id: string;
+  orderId: string;
+  symbol: string;
+  securityId: string;
+  transactionType: "BUY" | "SELL";
+  quantity: number;
+  orderType: "MARKET" | "LIMIT";
+  requestedPrice?: number;
+  executedPrice?: number;
+  status: TradeStatus;
+  strategyId?: string;
+  note?: string;
+  realizedPnl?: number;
+  createdAt: string;
+  filledAt?: string;
+}
+
+export interface TradeStore {
+  append(trade: TradeRecord): Promise<void>;
+  list(filter?: {
+    strategyId?: string;
+    symbol?: string;
+    fromDate?: string;
+    toDate?: string;
+    status?: TradeStatus;
+  }): Promise<TradeRecord[]>;
+  get(id: string): Promise<TradeRecord | null>;
+  update(id: string, patch: Partial<TradeRecord>): Promise<void>;
+}
+
 export interface StorageProvider {
   conversations: ConversationStore;
   memory: MemoryStore;
@@ -87,4 +120,5 @@ export interface StorageProvider {
   schedules: ScheduleStore;
   scheduleRuns: ScheduleRunStore;
   strategies: StrategyStore;
+  trades: TradeStore;
 }

@@ -2,10 +2,11 @@ import type { FastifyInstance } from "fastify";
 import Anthropic from "@anthropic-ai/sdk";
 import { randomUUID } from "crypto";
 import { DhanClient } from "../lib/dhan/client.js";
-import { TOOLS, type ToolDefinition, getAllToolDefinitions, getApprovalDescription, createUpdateMemoryTool, createRegisterTriggerTool, createCancelTriggerTool, createListTriggersTool, createRegisterScheduleTool, createPauseScheduleTool, createResumeScheduleTool, createListSchedulesTool, createDeleteScheduleTool, createStrategyTools } from "../lib/tools.js";
+import { TOOLS, type ToolDefinition, getAllToolDefinitions, getApprovalDescription, createUpdateMemoryTool, createRegisterTriggerTool, createCancelTriggerTool, createListTriggersTool, createRegisterScheduleTool, createPauseScheduleTool, createResumeScheduleTool, createListSchedulesTool, createDeleteScheduleTool, createStrategyTools, createTradeTools } from "../lib/tools.js";
 import { DhanTokenExpiredError } from "../types.js";
 import type { ClientMessage, ServerMessage } from "../types.js";
-import type { ConversationStore, MemoryStore, TriggerStore, ApprovalStore, ScheduleStore, StrategyStore } from "../lib/storage/index.js";
+import type { ConversationStore, MemoryStore, TriggerStore, ApprovalStore, ScheduleStore, StrategyStore, TradeStore } from "../lib/storage/index.js";
+import { getSecurityId } from "../lib/dhan/instruments.js";
 
 const anthropic = new Anthropic();
 
@@ -30,7 +31,7 @@ Error handling:
 - Common translations: a 400 error on a quote usually means the market is closed or the symbol isn't available right now; a 400 on an order means the order parameters were invalid; a 5xx means Dhan's servers are having issues
 - If the error is "TOOL_ERROR: TOKEN_EXPIRED", tell the user their session has expired and they need to reconnect — do not call any more tools`;
 
-export async function chatRoute(fastify: FastifyInstance, opts: { store: ConversationStore; memory: MemoryStore; triggers: TriggerStore; approvals: ApprovalStore; schedules: ScheduleStore; strategies: StrategyStore }) {
+export async function chatRoute(fastify: FastifyInstance, opts: { store: ConversationStore; memory: MemoryStore; triggers: TriggerStore; approvals: ApprovalStore; schedules: ScheduleStore; strategies: StrategyStore; trades: TradeStore }) {
   fastify.get("/ws/chat", { websocket: true }, async (socket, request) => {
     const dhanClient = new DhanClient();
     const pendingApprovals = new Map<string, (approved: boolean) => void>();
@@ -48,6 +49,7 @@ export async function chatRoute(fastify: FastifyInstance, opts: { store: Convers
     const listSchedulesTool = createListSchedulesTool(opts.schedules);
     const deleteScheduleTool = createDeleteScheduleTool(opts.schedules);
     const strategyToolList = createStrategyTools(opts.strategies);
+    const tradeToolList = createTradeTools(opts.trades);
     const localTools: Record<string, ToolDefinition> = {
       update_memory: updateMemoryTool,
       register_trigger: registerTriggerTool,
@@ -60,6 +62,9 @@ export async function chatRoute(fastify: FastifyInstance, opts: { store: Convers
       delete_schedule: deleteScheduleTool,
     };
     for (const t of strategyToolList) {
+      localTools[t.definition.name] = t;
+    }
+    for (const t of tradeToolList) {
       localTools[t.definition.name] = t;
     }
     const memoryContent = await opts.memory.read();
@@ -121,7 +126,7 @@ ${resolved.plan}
           }
         }
 
-        await runClaudeLoop(dhanClient, conversationHistory, pendingApprovals, send, turnSystemPrompt, localTools, opts.approvals);
+        await runClaudeLoop(dhanClient, conversationHistory, pendingApprovals, send, turnSystemPrompt, localTools, opts.approvals, opts.trades);
         await opts.store.append(conversationId, conversationHistory.slice(saveFrom));
       }
     });
@@ -167,7 +172,8 @@ async function runClaudeLoop(
   send: (msg: ServerMessage) => void,
   systemPrompt: string = SYSTEM_PROMPT,
   localTools: Record<string, ToolDefinition> = {},
-  approvals?: ApprovalStore
+  approvals?: ApprovalStore,
+  trades?: TradeStore
 ) {
   let tokenExpired = false;
 
@@ -282,6 +288,32 @@ async function runClaudeLoop(
             result = out.result;
             isError = out.isError;
             if (out.tokenExpired) tokenExpired = true;
+
+            // Auto-record every successful place_order
+            if (toolUse.name === "place_order" && !isError && trades) {
+              try {
+                const parsed = JSON.parse(result) as Record<string, unknown>;
+                const orderId = String(parsed["orderId"] ?? randomUUID());
+                const symbol = (args.symbol as string).toUpperCase();
+                const securityId = await getSecurityId(symbol).catch(() => "unknown");
+                await trades.append({
+                  id: randomUUID(),
+                  orderId,
+                  symbol,
+                  securityId,
+                  transactionType: args.transaction_type as "BUY" | "SELL",
+                  quantity: args.quantity as number,
+                  orderType: args.order_type as "MARKET" | "LIMIT",
+                  requestedPrice: args.price as number | undefined,
+                  status: "pending",
+                  strategyId: args.strategy_id as string | undefined,
+                  note: args.note as string | undefined,
+                  createdAt: new Date().toISOString(),
+                });
+              } catch (err) {
+                console.error("[trades] failed to record trade:", err);
+              }
+            }
           }
         } else {
           // Already running — just await the in-flight promise

@@ -6,6 +6,7 @@ import { LocalApprovalStore } from "./approval-store.js";
 import { LocalTriggerAuditStore } from "./trigger-audit-store.js";
 import { LocalScheduleStore, LocalScheduleRunStore } from "../../scheduler/store.js";
 import { LocalStrategyStore } from "./strategy-store.js";
+import { LocalTradeStore } from "./trade-store.js";
 
 export class LocalStorageProvider implements StorageProvider {
   conversations: LocalConversationStore;
@@ -16,6 +17,7 @@ export class LocalStorageProvider implements StorageProvider {
   schedules: LocalScheduleStore;
   scheduleRuns: LocalScheduleRunStore;
   strategies: LocalStrategyStore;
+  trades: LocalTradeStore;
 
   constructor(dataDir: string) {
     this.conversations = new LocalConversationStore(dataDir);
@@ -26,5 +28,6 @@ export class LocalStorageProvider implements StorageProvider {
     this.schedules = new LocalScheduleStore(dataDir);
     this.scheduleRuns = new LocalScheduleRunStore(dataDir);
     this.strategies = new LocalStrategyStore(dataDir);
+    this.trades = new LocalTradeStore(dataDir);
   }
 }

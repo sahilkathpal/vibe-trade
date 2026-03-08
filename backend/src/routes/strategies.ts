@@ -1,9 +1,10 @@
 import type { FastifyInstance } from "fastify";
-import type { StrategyStore, TriggerStore, ScheduleStore } from "../lib/storage/index.js";
+import type { StrategyStore, TriggerStore, ScheduleStore, TradeStore, TradeRecord } from "../lib/storage/index.js";
+import { DhanClient } from "../lib/dhan/client.js";
 
 export async function strategiesRoute(
   fastify: FastifyInstance,
-  opts: { strategies: StrategyStore; triggers: TriggerStore; schedules: ScheduleStore },
+  opts: { strategies: StrategyStore; triggers: TriggerStore; schedules: ScheduleStore; trades: TradeStore },
 ) {
   // GET /api/strategies — list
   fastify.get("/api/strategies", async (request) => {
@@ -93,5 +94,128 @@ export async function strategiesRoute(
     }
     await opts.strategies.setStatus(id, "archived");
     return { success: true };
+  });
+
+  // GET /api/strategies/:id/trades — raw trade records for a strategy
+  fastify.get("/api/strategies/:id/trades", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const strategy = await opts.strategies.get(id);
+    if (!strategy) { reply.code(404); return { error: "Not found" }; }
+    return opts.trades.list({ strategyId: id });
+  });
+
+  // GET /api/strategies/:id/performance — aggregated P&L stats
+  fastify.get("/api/strategies/:id/performance", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const strategy = await opts.strategies.get(id);
+    if (!strategy) { reply.code(404); return { error: "Not found" }; }
+
+    const allTrades = await opts.trades.list({ strategyId: id });
+    const filled = allTrades.filter(t => t.status === "filled");
+    const buys = filled.filter(t => t.transactionType === "BUY");
+    const sells = filled.filter(t => t.transactionType === "SELL");
+    const sellsWithPnl = sells.filter(t => t.realizedPnl !== undefined);
+
+    const totalRealizedPnl = +sellsWithPnl.reduce((s, t) => s + t.realizedPnl!, 0).toFixed(2);
+    const winRate = sellsWithPnl.length > 0
+      ? +(sellsWithPnl.filter(t => t.realizedPnl! > 0).length / sellsWithPnl.length).toFixed(2)
+      : null;
+    const bestTrade = sellsWithPnl.reduce<TradeRecord | null>((b, t) => !b || t.realizedPnl! > b.realizedPnl! ? t : b, null);
+    const worstTrade = sellsWithPnl.reduce<TradeRecord | null>((w, t) => !w || t.realizedPnl! < w.realizedPnl! ? t : w, null);
+
+    // Open positions: net qty per symbol from filled trades
+    const netQty: Record<string, { quantity: number; totalCost: number }> = {};
+    for (const t of filled) {
+      if (!netQty[t.symbol]) netQty[t.symbol] = { quantity: 0, totalCost: 0 };
+      if (t.transactionType === "BUY") {
+        netQty[t.symbol].quantity += t.quantity;
+        netQty[t.symbol].totalCost += (t.executedPrice ?? t.requestedPrice ?? 0) * t.quantity;
+      } else {
+        netQty[t.symbol].quantity -= t.quantity;
+      }
+    }
+    const openPositions = Object.entries(netQty)
+      .filter(([, v]) => v.quantity > 0)
+      .map(([symbol, v]) => ({
+        symbol,
+        quantity: v.quantity,
+        avgBuyPrice: +(v.totalCost / v.quantity).toFixed(2),
+        deployedCapital: +v.totalCost.toFixed(2),
+      }));
+
+    const deployedCapital = openPositions.reduce((s, p) => s + p.deployedCapital, 0);
+
+    return {
+      strategyId: id,
+      strategyName: strategy.name,
+      allocation: strategy.allocation,
+      deployedCapital: +deployedCapital.toFixed(2),
+      totalTrades: allTrades.length,
+      filledTrades: filled.length,
+      pendingTrades: allTrades.filter(t => t.status === "pending").length,
+      buyTrades: buys.length,
+      sellTrades: sells.length,
+      totalRealizedPnl,
+      winRate,
+      bestTrade: bestTrade ? { symbol: bestTrade.symbol, pnl: bestTrade.realizedPnl!, date: bestTrade.filledAt } : null,
+      worstTrade: worstTrade ? { symbol: worstTrade.symbol, pnl: worstTrade.realizedPnl!, date: worstTrade.filledAt } : null,
+      openPositions,
+    };
+  });
+
+  // POST /api/trades/sync — pull Dhan tradebook and update pending records
+  fastify.post("/api/trades/sync", async (_request, reply) => {
+    let dhan: DhanClient;
+    try {
+      dhan = new DhanClient();
+    } catch {
+      reply.code(503);
+      return { error: "Dhan credentials not configured" };
+    }
+
+    const raw = await dhan.getTradebook();
+    const fills = Array.isArray(raw) ? raw as Record<string, unknown>[] : [];
+    const fillMap = new Map<string, Record<string, unknown>>();
+    for (const fill of fills) {
+      const oid = String(fill["orderId"] ?? fill["order_id"] ?? "");
+      if (oid) fillMap.set(oid, fill);
+    }
+
+    const allPending = await opts.trades.list({ status: "pending" });
+    let updated = 0;
+
+    for (const trade of allPending) {
+      const fill = fillMap.get(trade.orderId);
+      if (!fill) continue;
+
+      const executedPrice = (fill["tradedPrice"] as number | undefined) ?? (fill["traded_price"] as number | undefined);
+      const filledAt = String(fill["updateTime"] ?? fill["exchangeTime"] ?? fill["createTime"] ?? new Date().toISOString());
+      const patch: Partial<TradeRecord> = { status: "filled", executedPrice, filledAt };
+
+      if (trade.transactionType === "SELL" && executedPrice) {
+        const priorBuys = (await opts.trades.list({ symbol: trade.symbol, status: "filled" }))
+          .filter(t => t.transactionType === "BUY" && t.executedPrice && (!trade.strategyId || t.strategyId === trade.strategyId));
+        const totalQty = priorBuys.reduce((s, t) => s + t.quantity, 0);
+        const totalCost = priorBuys.reduce((s, t) => s + t.executedPrice! * t.quantity, 0);
+        if (totalQty > 0) {
+          patch.realizedPnl = +((executedPrice - totalCost / totalQty) * trade.quantity).toFixed(2);
+        }
+      }
+
+      await opts.trades.update(trade.id, patch);
+      updated++;
+    }
+
+    return { tradebookEntries: fills.length, updated };
+  });
+
+  // GET /api/trades — all trades, optionally filtered
+  fastify.get("/api/trades", async (request) => {
+    const q = request.query as { strategyId?: string; symbol?: string; status?: string };
+    return opts.trades.list({
+      strategyId: q.strategyId,
+      symbol: q.symbol,
+      status: q.status as import("../lib/storage/types.js").TradeStatus | undefined,
+    });
   });
 }

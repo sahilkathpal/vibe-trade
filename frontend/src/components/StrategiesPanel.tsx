@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { StrategyDashboard } from "./StrategyDashboard";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -81,7 +82,7 @@ function EmptyState() {
 
 // ── Strategy Card ──────────────────────────────────────────────────────────────
 
-function StrategyCard({ strategy, onRefresh }: { strategy: Strategy; onRefresh: () => void }) {
+function StrategyCard({ strategy, onRefresh, onViewPerformance }: { strategy: Strategy; onRefresh: () => void; onViewPerformance: (id: string) => void }) {
   const [expanded, setExpanded] = useState(false);
   const [archiving, setArchiving] = useState(false);
 
@@ -145,13 +146,21 @@ function StrategyCard({ strategy, onRefresh }: { strategy: Strategy; onRefresh: 
         <p className="text-xs text-gray-600">
           ID: <span className="font-mono">{strategy.id.slice(0, 8)}…</span>
         </p>
-        <button
-          onClick={handleArchive}
-          disabled={archiving}
-          className="px-3 py-1.5 rounded-lg bg-gray-700/40 text-gray-400 border border-gray-600/40 text-xs font-medium hover:bg-red-900/30 hover:text-red-400 hover:border-red-800/40 disabled:opacity-50 transition-colors"
-        >
-          Archive
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => onViewPerformance(strategy.id)}
+            className="px-3 py-1.5 rounded-lg bg-blue-900/30 text-blue-400 border border-blue-800/40 text-xs font-medium hover:bg-blue-900/50 hover:text-blue-300 transition-colors"
+          >
+            Performance
+          </button>
+          <button
+            onClick={handleArchive}
+            disabled={archiving}
+            className="px-3 py-1.5 rounded-lg bg-gray-700/40 text-gray-400 border border-gray-600/40 text-xs font-medium hover:bg-red-900/30 hover:text-red-400 hover:border-red-800/40 disabled:opacity-50 transition-colors"
+          >
+            Archive
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -162,6 +171,7 @@ function StrategyCard({ strategy, onRefresh }: { strategy: Strategy; onRefresh: 
 export function StrategiesPanel() {
   const [strategies, setStrategies] = useState<Strategy[]>([]);
   const [loading, setLoading] = useState(true);
+  const [selectedStrategyId, setSelectedStrategyId] = useState<string | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const fetchStrategies = useCallback(async () => {
@@ -184,6 +194,16 @@ export function StrategiesPanel() {
     };
   }, [fetchStrategies]);
 
+  // Show performance dashboard for a selected strategy
+  if (selectedStrategyId) {
+    return (
+      <StrategyDashboard
+        strategyId={selectedStrategyId}
+        onBack={() => setSelectedStrategyId(null)}
+      />
+    );
+  }
+
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
       <div className="flex-1 overflow-y-auto">
@@ -201,7 +221,12 @@ export function StrategiesPanel() {
         ) : (
           <div className="p-4 space-y-3">
             {strategies.map((s) => (
-              <StrategyCard key={s.id} strategy={s} onRefresh={fetchStrategies} />
+              <StrategyCard
+                key={s.id}
+                strategy={s}
+                onRefresh={fetchStrategies}
+                onViewPerformance={setSelectedStrategyId}
+              />
             ))}
           </div>
         )}

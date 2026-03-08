@@ -1,7 +1,7 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import { parseExpression } from "cron-parser";
 import { DhanClient } from "./dhan/client.js";
-import type { MemoryStore, TriggerStore, ScheduleStore, StrategyStore } from "./storage/index.js";
+import type { MemoryStore, TriggerStore, ScheduleStore, StrategyStore, TradeStore } from "./storage/index.js";
 import type { TradeArgs } from "./heartbeat/types.js";
 import {
   getSecurityId,
@@ -255,6 +255,14 @@ export const TOOLS: Record<string, ToolDefinition> = {
           price: {
             type: "number",
             description: "Limit price (required for LIMIT orders, ignored for MARKET)",
+          },
+          strategy_id: {
+            type: "string",
+            description: "Optional strategy ID to associate this trade with a strategy's records",
+          },
+          note: {
+            type: "string",
+            description: "Optional reasoning or context for this trade (stored in trade history)",
           },
         },
         required: ["symbol", "transaction_type", "quantity", "order_type"],
@@ -1191,4 +1199,164 @@ The plan field should describe the full trading policy: objectives, entry/exit s
   };
 
   return [createStrategy, updateStrategyState, updateStrategyPlan, listStrategies, archiveStrategy];
+}
+
+// ── TRADE TOOLS ───────────────────────────────────────────────────────────────
+
+export function createTradeTools(store: TradeStore): ToolDefinition[] {
+  const getTradeHistory: ToolDefinition = {
+    requiresApproval: false,
+    definition: {
+      name: "get_trade_history",
+      description: "Query the local trade history log. Filter by strategy, symbol, date range, or status. Returns all recorded orders with fill details and P&L.",
+      input_schema: {
+        type: "object",
+        properties: {
+          strategy_id: { type: "string", description: "Filter trades belonging to a specific strategy" },
+          symbol: { type: "string", description: "Filter by NSE symbol, e.g. 'RELIANCE'" },
+          from_date: { type: "string", description: "Start date (YYYY-MM-DD), inclusive" },
+          to_date: { type: "string", description: "End date (YYYY-MM-DD), inclusive" },
+          status: { type: "string", enum: ["pending", "filled", "cancelled", "rejected"], description: "Filter by trade status" },
+        },
+        required: [],
+      },
+    },
+    handler: async (args) => {
+      const trades = await store.list({
+        strategyId: args.strategy_id as string | undefined,
+        symbol: args.symbol as string | undefined,
+        fromDate: args.from_date as string | undefined,
+        toDate: args.to_date as string | undefined,
+        status: args.status as import("./storage/types.js").TradeStatus | undefined,
+      });
+      if (trades.length === 0) return "No trades found matching the given filters.";
+      return JSON.stringify(trades, null, 2);
+    },
+  };
+
+  const syncTradebook: ToolDefinition = {
+    requiresApproval: false,
+    definition: {
+      name: "sync_tradebook",
+      description: "Pull today's executed trades from Dhan and update local trade records with fill prices, timestamps, and realized P&L for SELL trades.",
+      input_schema: {
+        type: "object",
+        properties: {},
+        required: [],
+      },
+    },
+    handler: async (_args, client) => {
+      const raw = await client.getTradebook();
+      const fills = Array.isArray(raw) ? raw : [];
+
+      if (fills.length === 0) return "No trades in today's Dhan tradebook.";
+
+      // Build a map of orderId → fill for fast lookup
+      type DhanFill = Record<string, unknown>;
+      const fillMap = new Map<string, DhanFill>();
+      for (const fill of fills as DhanFill[]) {
+        const oid = String(fill["orderId"] ?? fill["order_id"] ?? "");
+        if (oid) fillMap.set(oid, fill);
+      }
+
+      const allTrades = await store.list();
+      let updated = 0;
+
+      for (const trade of allTrades) {
+        if (trade.status !== "pending") continue;
+        const fill = fillMap.get(trade.orderId);
+        if (!fill) continue;
+
+        const executedPrice = (fill["tradedPrice"] as number) ?? (fill["traded_price"] as number);
+        const filledAt = String(fill["updateTime"] ?? fill["exchangeTime"] ?? fill["createTime"] ?? new Date().toISOString());
+        const patch: Partial<import("./storage/types.js").TradeRecord> = {
+          status: "filled",
+          executedPrice,
+          filledAt,
+        };
+
+        // Compute realizedPnl for SELL fills using avg cost of prior BUY fills
+        if (trade.transactionType === "SELL" && executedPrice) {
+          const priorBuys = (await store.list({ symbol: trade.symbol, status: "filled" }))
+            .filter(t => t.transactionType === "BUY" && t.executedPrice && (!trade.strategyId || t.strategyId === trade.strategyId));
+          const totalQty = priorBuys.reduce((s, t) => s + t.quantity, 0);
+          const totalCost = priorBuys.reduce((s, t) => s + (t.executedPrice! * t.quantity), 0);
+          if (totalQty > 0) {
+            const avgCost = totalCost / totalQty;
+            patch.realizedPnl = +(( executedPrice - avgCost) * trade.quantity).toFixed(2);
+          }
+        }
+
+        await store.update(trade.id, patch);
+        updated++;
+      }
+
+      return JSON.stringify({ tradebookEntries: fills.length, localRecordsUpdated: updated });
+    },
+  };
+
+  const getStrategyPerformance: ToolDefinition = {
+    requiresApproval: false,
+    definition: {
+      name: "get_strategy_performance",
+      description: "Get aggregated P&L, win rate, trade count, and open positions for a strategy. Pass no strategy_id to get overall portfolio performance.",
+      input_schema: {
+        type: "object",
+        properties: {
+          strategy_id: { type: "string", description: "Strategy ID. Omit for overall portfolio stats." },
+        },
+        required: [],
+      },
+    },
+    handler: async (args) => {
+      const strategyId = args.strategy_id as string | undefined;
+      const trades = await store.list({ strategyId, status: "filled" });
+      const allTrades = await store.list({ strategyId });
+
+      const buys = trades.filter(t => t.transactionType === "BUY");
+      const sells = trades.filter(t => t.transactionType === "SELL");
+      const sellsWithPnl = sells.filter(t => t.realizedPnl !== undefined);
+
+      const totalRealizedPnl = +sellsWithPnl.reduce((s, t) => s + t.realizedPnl!, 0).toFixed(2);
+      const winningTrades = sellsWithPnl.filter(t => t.realizedPnl! > 0);
+      const winRate = sellsWithPnl.length > 0 ? +(winningTrades.length / sellsWithPnl.length).toFixed(2) : null;
+      const bestTrade = sellsWithPnl.reduce<import("./storage/types.js").TradeRecord | null>((best, t) => !best || t.realizedPnl! > best.realizedPnl! ? t : best, null);
+      const worstTrade = sellsWithPnl.reduce<import("./storage/types.js").TradeRecord | null>((worst, t) => !worst || t.realizedPnl! < worst.realizedPnl! ? t : worst, null);
+
+      // Open positions: net BUY qty - SELL qty per symbol (filled trades only)
+      const netQty: Record<string, { quantity: number; totalCost: number }> = {};
+      for (const t of trades) {
+        if (!netQty[t.symbol]) netQty[t.symbol] = { quantity: 0, totalCost: 0 };
+        if (t.transactionType === "BUY") {
+          netQty[t.symbol].quantity += t.quantity;
+          netQty[t.symbol].totalCost += (t.executedPrice ?? 0) * t.quantity;
+        } else {
+          netQty[t.symbol].quantity -= t.quantity;
+        }
+      }
+      const openPositions = Object.entries(netQty)
+        .filter(([, v]) => v.quantity > 0)
+        .map(([symbol, v]) => ({
+          symbol,
+          quantity: v.quantity,
+          avgBuyPrice: v.quantity > 0 ? +(v.totalCost / v.quantity).toFixed(2) : 0,
+        }));
+
+      return JSON.stringify({
+        strategyId: strategyId ?? "all",
+        totalTrades: allTrades.length,
+        filledTrades: trades.length,
+        pendingTrades: allTrades.filter(t => t.status === "pending").length,
+        buyTrades: buys.length,
+        sellTrades: sells.length,
+        totalRealizedPnl,
+        winRate,
+        bestTrade: bestTrade ? { symbol: bestTrade.symbol, pnl: bestTrade.realizedPnl, date: bestTrade.filledAt } : null,
+        worstTrade: worstTrade ? { symbol: worstTrade.symbol, pnl: worstTrade.realizedPnl, date: worstTrade.filledAt } : null,
+        openPositions,
+      }, null, 2);
+    },
+  };
+
+  return [getTradeHistory, syncTradebook, getStrategyPerformance];
 }
