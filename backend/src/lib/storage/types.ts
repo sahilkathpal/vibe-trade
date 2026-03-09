@@ -96,6 +96,7 @@ export interface TradeRecord {
   realizedPnl?: number;
   createdAt: string;
   filledAt?: string;
+  rejectionReason?: string;
 }
 
 export interface TradeStore {

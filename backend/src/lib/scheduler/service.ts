@@ -1,6 +1,6 @@
 import { parseExpression } from "cron-parser";
 import type { DhanClient } from "../dhan/client.js";
-import type { ApprovalStore, MemoryStore, TriggerStore, StrategyStore } from "../storage/index.js";
+import type { ApprovalStore, MemoryStore, TriggerStore, StrategyStore, TradeStore } from "../storage/index.js";
 import type { ScheduleStore, ScheduleRunStore } from "./store.js";
 import { isTradingDay } from "../market-calendar.js";
 import { runScheduleJob } from "./runner.js";
@@ -35,6 +35,7 @@ export class SchedulerService {
     private readonly memory: MemoryStore,
     private readonly intervalMs: number = 60_000,
     private readonly strategyStore?: StrategyStore,
+    private readonly tradeStore?: TradeStore,
   ) {}
 
   start(): void {
@@ -97,7 +98,7 @@ export class SchedulerService {
         this.activeJobs++;
         console.log(`[scheduler] launching job for schedule ${schedule.id}: ${schedule.name}`);
 
-        runScheduleJob(schedule, this.dhan, this.triggerStore, this.approvalStore, this.scheduleRunStore, this.memory, this.strategyStore)
+        runScheduleJob(schedule, this.dhan, this.triggerStore, this.approvalStore, this.scheduleRunStore, this.memory, this.strategyStore, this.tradeStore)
           .catch(err => console.error(`[scheduler] job error for ${schedule.id}:`, err))
           .finally(() => { this.activeJobs--; });
       }

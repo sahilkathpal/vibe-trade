@@ -159,6 +159,10 @@ export class DhanClient {
     return this.request("DELETE", `/orders/${orderId}`);
   }
 
+  async getOrderById(orderId: string): Promise<unknown> {
+    return this.request("GET", `/orders/${orderId}`);
+  }
+
   async getHistory(
     securityId: string,
     interval: "1" | "5" | "15" | "25" | "60" | "D",

@@ -6,6 +6,7 @@ import { evaluateCodeTriggers, evaluateLlmTriggers, evaluateTimeTriggers } from 
 import { runReasoningJob } from "./runner.js";
 import { getSecurityId } from "../dhan/instruments.js";
 import { getMarketStatus } from "../market-calendar.js";
+import { syncOrders } from "../order-sync.js";
 
 export class HeartbeatService {
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -85,6 +86,16 @@ export class HeartbeatService {
 
       if (firedIds.length > 0) {
         console.log(`[heartbeat] fired: ${firedIds.join(", ")}`);
+      }
+
+      const hasReasoningJob = firedIds.some(id =>
+        activeTriggers.find(t => t.id === id)?.action.type === "reasoning_job"
+      );
+      if (hasReasoningJob && this.tradeStore) {
+        const r = await syncOrders(this.dhan, this.tradeStore);
+        if (r.fillsUpdated + r.rejectedOrCancelled > 0) {
+          console.log(`[heartbeat] order-sync: ${r.fillsUpdated} filled, ${r.rejectedOrCancelled} rejected/cancelled`);
+        }
       }
 
       for (const id of firedIds) {

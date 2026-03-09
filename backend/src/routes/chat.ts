@@ -297,6 +297,12 @@ async function runClaudeLoop(
                 const orderId = String(parsed["orderId"] ?? randomUUID());
                 const symbol = (args.symbol as string).toUpperCase();
                 const securityId = await getSecurityId(symbol).catch(() => "unknown");
+                const currentStatus = String(parsed["currentStatus"] ?? "").toUpperCase();
+                const initialStatus: import("../lib/storage/types.js").TradeStatus =
+                  currentStatus === "TRADED" || currentStatus === "PART_TRADED" ? "filled"
+                  : currentStatus === "REJECTED" ? "rejected"
+                  : currentStatus === "CANCELLED" || currentStatus === "EXPIRED" ? "cancelled"
+                  : "pending";
                 await trades.append({
                   id: randomUUID(),
                   orderId,
@@ -306,7 +312,13 @@ async function runClaudeLoop(
                   quantity: args.quantity as number,
                   orderType: args.order_type as "MARKET" | "LIMIT",
                   requestedPrice: args.price as number | undefined,
-                  status: "pending",
+                  status: initialStatus,
+                  executedPrice: initialStatus === "filled"
+                    ? (parsed["executedPrice"] as number | undefined) : undefined,
+                  filledAt: initialStatus === "filled"
+                    ? (parsed["filledAt"] as string | undefined) : undefined,
+                  rejectionReason: initialStatus === "rejected"
+                    ? (parsed["rejectionReason"] as string | undefined) : undefined,
                   strategyId: args.strategy_id as string | undefined,
                   note: args.note as string | undefined,
                   createdAt: new Date().toISOString(),

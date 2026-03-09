@@ -17,6 +17,7 @@ import type { Candle } from "./indicators.js";
 import { getFundamentals, getEtfInfo } from "./yahoo.js";
 import { fetchNews } from "./news.js";
 import { getMarketStatus, isTradingDay, getUpcomingHolidays } from "./market-calendar.js";
+import { parseOrderStatus, syncOrders } from "./order-sync.js";
 
 export interface ToolDefinition {
   definition: Anthropic.Tool;
@@ -271,15 +272,40 @@ export const TOOLS: Record<string, ToolDefinition> = {
     handler: async (args, client) => {
       const symbol = args.symbol as string;
       const securityId = await getSecurityId(symbol);
-      const result = await client.placeOrder({
+      const placeResult = await client.placeOrder({
         symbol,
         securityId,
         transactionType: args.transaction_type as "BUY" | "SELL",
         quantity: args.quantity as number,
         orderType: args.order_type as "MARKET" | "LIMIT",
         price: args.price as number | undefined,
-      });
-      return JSON.stringify(result, null, 2);
+      }) as Record<string, unknown>;
+      const orderId = String(placeResult["orderId"] ?? "");
+
+      if (!orderId) return JSON.stringify(placeResult, null, 2);
+
+      try {
+        await new Promise(r => setTimeout(r, 1500));
+        const orderDetail = await client.getOrderById(orderId) as Record<string, unknown>;
+        const parsed = parseOrderStatus(orderDetail);
+
+        const message =
+          parsed.tradeStatus === "filled"    ? `Order filled at ₹${parsed.executedPrice}`
+          : parsed.tradeStatus === "rejected" ? `Order REJECTED: ${parsed.rejectionReason}`
+          : `Order accepted, awaiting confirmation (status: ${parsed.dhanStatus})`;
+
+        return JSON.stringify({
+          orderId,
+          currentStatus: parsed.dhanStatus,
+          executedPrice: parsed.executedPrice ?? null,
+          rejectionReason: parsed.rejectionReason ?? null,
+          filledAt: parsed.filledAt ?? null,
+          message,
+        }, null, 2);
+      } catch {
+        // Poll failed — return original Dhan response unchanged
+        return JSON.stringify(placeResult, null, 2);
+      }
     },
   },
 
@@ -1262,52 +1288,11 @@ export function createTradeTools(store: TradeStore): ToolDefinition[] {
       },
     },
     handler: async (_args, client) => {
-      const raw = await client.getTradebook();
-      const fills = Array.isArray(raw) ? raw : [];
-
-      if (fills.length === 0) return "No trades in today's Dhan tradebook.";
-
-      // Build a map of orderId → fill for fast lookup
-      type DhanFill = Record<string, unknown>;
-      const fillMap = new Map<string, DhanFill>();
-      for (const fill of fills as DhanFill[]) {
-        const oid = String(fill["orderId"] ?? fill["order_id"] ?? "");
-        if (oid) fillMap.set(oid, fill);
-      }
-
-      const allTrades = await store.list();
-      let updated = 0;
-
-      for (const trade of allTrades) {
-        if (trade.status !== "pending") continue;
-        const fill = fillMap.get(trade.orderId);
-        if (!fill) continue;
-
-        const executedPrice = (fill["tradedPrice"] as number) ?? (fill["traded_price"] as number);
-        const filledAt = String(fill["updateTime"] ?? fill["exchangeTime"] ?? fill["createTime"] ?? new Date().toISOString());
-        const patch: Partial<import("./storage/types.js").TradeRecord> = {
-          status: "filled",
-          executedPrice,
-          filledAt,
-        };
-
-        // Compute realizedPnl for SELL fills using avg cost of prior BUY fills
-        if (trade.transactionType === "SELL" && executedPrice) {
-          const priorBuys = (await store.list({ symbol: trade.symbol, status: "filled" }))
-            .filter(t => t.transactionType === "BUY" && t.executedPrice && (!trade.strategyId || t.strategyId === trade.strategyId));
-          const totalQty = priorBuys.reduce((s, t) => s + t.quantity, 0);
-          const totalCost = priorBuys.reduce((s, t) => s + (t.executedPrice! * t.quantity), 0);
-          if (totalQty > 0) {
-            const avgCost = totalCost / totalQty;
-            patch.realizedPnl = +(( executedPrice - avgCost) * trade.quantity).toFixed(2);
-          }
-        }
-
-        await store.update(trade.id, patch);
-        updated++;
-      }
-
-      return JSON.stringify({ tradebookEntries: fills.length, localRecordsUpdated: updated });
+      const result = await syncOrders(client, store);
+      return JSON.stringify({
+        fillsUpdated: result.fillsUpdated,
+        rejectedOrCancelledDetected: result.rejectedOrCancelled,
+      });
     },
   };
 

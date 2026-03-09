@@ -1,12 +1,13 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { randomUUID } from "crypto";
 import type { DhanClient } from "../dhan/client.js";
-import type { ApprovalStore, MemoryStore, StrategyStore } from "../storage/index.js";
+import type { ApprovalStore, MemoryStore, StrategyStore, TradeStore } from "../storage/index.js";
 import type { TriggerStore } from "../storage/index.js";
 import type { Schedule } from "./types.js";
 import type { ScheduleRunStore } from "./store.js";
 import type { TradeArgs } from "../heartbeat/types.js";
 import { TOOLS } from "../tools.js";
+import { syncOrders } from "../order-sync.js";
 
 const anthropic = new Anthropic();
 
@@ -129,9 +130,16 @@ export async function runScheduleJob(
   scheduleRunStore: ScheduleRunStore,
   memory: MemoryStore,
   strategyStore?: StrategyStore,
+  tradeStore?: TradeStore,
 ): Promise<void> {
   const startedAt = new Date().toISOString();
   const runId = randomUUID();
+
+  if (tradeStore) {
+    await syncOrders(dhan, tradeStore).catch(err =>
+      console.error("[scheduler] pre-run order sync failed:", err)
+    );
+  }
 
   try {
     const memoryContent = await memory.read().catch(() => "");

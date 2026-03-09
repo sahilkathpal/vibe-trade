@@ -68,7 +68,7 @@ async function start() {
   let scheduler: SchedulerService | null = null;
   try {
     const schedulerDhan = new DhanClient();
-    scheduler = new SchedulerService(schedulerDhan, storage.schedules, storage.scheduleRuns, storage.triggers, storage.approvals, storage.memory, 60_000, storage.strategies);
+    scheduler = new SchedulerService(schedulerDhan, storage.schedules, storage.scheduleRuns, storage.triggers, storage.approvals, storage.memory, 60_000, storage.strategies, storage.trades);
     scheduler.start();
   } catch (err) {
     console.warn("[scheduler] Failed to start:", (err as Error).message);
