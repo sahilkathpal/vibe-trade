@@ -40,11 +40,19 @@ When a reasoning job fires under a strategy-linked trigger or schedule, the runn
 
 **Rejected:** Only checking funds at approval execution time (when the user clicks approve). This catches the failure late — the user has already reviewed a trade that cannot execute. Injecting funds at reasoning time catches it before the approval is even queued.
 
-### 4. strategyId is a loose foreign key on Trigger and Schedule
+### 4. Archiving cascades to linked triggers and schedules
 
-Triggers and schedules gain an optional `strategyId` field. No referential integrity is enforced — if a strategy is archived, its linked triggers and schedules continue to run (they just won't inject strategy context, since the store returns `null` for archived strategies). This is intentional: archiving a strategy should not silently cancel active triggers.
+When a strategy is archived (`DELETE /api/strategies/:id` or the `archive_strategy` tool), the system:
 
-**Consequence:** Users must manually cancel triggers and schedules when archiving a strategy.
+1. **Guards** against open positions — returns a 409 with the blocking position list if any filled BUY trades have no matching SELL. The user must close positions in Dhan first.
+2. **Cancels** all active triggers with `strategyId === id`.
+3. **Deletes** all active or paused schedules with `strategyId === id`.
+
+**Rationale:** The original design left cleanup to the user. In practice, orphaned triggers and schedules continued to fire after archival, queuing approvals for a strategy that no longer existed. Auto-cascade on archive is safer.
+
+**Safety net:** Both the heartbeat runner and scheduler runner check `strategy.status === "archived"` after fetching strategy context. If a trigger or schedule slips through the cascade (e.g. race condition), the runner cancels/skips it and logs a warning.
+
+**Consequence:** Archiving a strategy with open positions is blocked. Users must exit positions before archiving. The frontend shows an inline error listing the blocking positions.
 
 ### 5. @mention in chat injects strategy context per-turn
 

@@ -59,7 +59,20 @@ Untagged trades (no strategyId) are still recorded and appear in the global `GET
 
 `trades.json` stores a `TradeRecord[]`. Unlike the append-only audit log stores (JSONL), trade records need in-place updates (status, executedPrice, realizedPnl). A JSON array with full-file rewrite on mutation is the simplest consistent choice given the existing pattern in `LocalStrategyStore`.
 
+`append()` deduplicates by `orderId` — if a record with the same Dhan order ID already exists, the append is skipped with a warning log. This prevents double-recording when auto-sync in the scheduler and a manual `sync_tradebook` call overlap.
+
 **Consequence:** The file is fully rewritten on every `update()` call. For the expected volume (hundreds to low thousands of trades), this is negligible. When switching to a hosted DB, `TradeStore.update()` maps naturally to a single `UPDATE` statement.
+
+### 7. P&L and open-position math is extracted to a shared utility
+
+`lib/trade-utils.ts` provides two pure functions used across the codebase:
+
+- `computeOpenPositions(trades)` — net qty per symbol (BUYs add, SELLs reduce), returns symbols with qty > 0 with avg buy price and deployed capital.
+- `computeRealizedPnl(executedPrice, quantity, priorBuys)` — AVCO P&L for a SELL fill.
+
+Both are called from `order-sync.ts`, `routes/strategies.ts` (performance endpoint + archive guard), and `lib/tools.ts` (`archive_strategy`). This eliminates three formerly separate copies of the same arithmetic.
+
+---
 
 ### 6. Performance aggregation is computed on read, not stored
 
