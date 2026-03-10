@@ -35,6 +35,7 @@ async function start() {
     triggers: storage.triggers,
     approvals: storage.approvals,
     schedules: storage.schedules,
+    scheduleRuns: storage.scheduleRuns,
     strategies: storage.strategies,
     trades: storage.trades,
   });

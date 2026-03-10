@@ -2,6 +2,7 @@ import type Anthropic from "@anthropic-ai/sdk";
 import { parseExpression } from "cron-parser";
 import { DhanClient } from "./dhan/client.js";
 import type { MemoryStore, TriggerStore, ScheduleStore, StrategyStore, TradeStore } from "./storage/index.js";
+import type { ScheduleRunStore } from "./scheduler/store.js";
 import type { TradeArgs } from "./heartbeat/types.js";
 import {
   getSecurityId,
@@ -1141,6 +1142,59 @@ export function createDeleteScheduleTool(store: ScheduleStore): ToolDefinition {
       if (!schedule) return `Error: Schedule "${id}" not found`;
       await store.setStatus(id, "deleted");
       return `Schedule "${schedule.name}" deleted.`;
+    },
+  };
+}
+
+export function createGetScheduleRunsTool(store: ScheduleRunStore): ToolDefinition {
+  return {
+    requiresApproval: false,
+    definition: {
+      name: "get_schedule_runs",
+      description: "Get recent run history for scheduled jobs. Use this when the user asks what a scheduled task found, whether it ran, or what trades it queued.",
+      input_schema: {
+        type: "object",
+        properties: {
+          schedule_name: { type: "string", description: "Filter by schedule name (case-insensitive substring match). Omit to return runs across all schedules." },
+          limit: { type: "number", description: "Number of runs to return (default 5, max 20)" },
+        },
+      },
+    },
+    handler: async (args) => {
+      const { schedule_name, limit } = args as { schedule_name?: string; limit?: number };
+      const cap = Math.min(limit ?? 5, 20);
+      let runs = await store.list(50);
+
+      if (schedule_name) {
+        const needle = schedule_name.toLowerCase();
+        runs = runs.filter(r => r.scheduleName?.toLowerCase().includes(needle));
+      }
+
+      runs = runs.slice(0, cap);
+
+      if (runs.length === 0) {
+        return schedule_name
+          ? `No runs found for schedule matching "${schedule_name}".`
+          : "No schedule runs recorded yet.";
+      }
+
+      return runs.map(r => {
+        const startedAt = r.startedAt ? new Date(r.startedAt).toLocaleString("en-IN", { timeZone: "Asia/Kolkata", dateStyle: "medium", timeStyle: "short" }) : "unknown time";
+        const durationMs = new Date(r.completedAt).getTime() - new Date(r.startedAt).getTime();
+        const duration = durationMs < 1000 ? `${durationMs}ms` : `${Math.round(durationMs / 1000)}s`;
+
+        let outcomeStr: string;
+        if (r.outcome.type === "completed") {
+          const n = r.outcome.approvalIds.length;
+          outcomeStr = `completed — ${r.outcome.summary}${n > 0 ? ` (${n} approval${n > 1 ? "s" : ""} queued)` : ""}`;
+        } else if (r.outcome.type === "no_action") {
+          outcomeStr = `no action — ${r.outcome.reason}`;
+        } else {
+          outcomeStr = `error — ${r.outcome.message}`;
+        }
+
+        return `Schedule: "${r.scheduleName ?? r.scheduleId}"  (${startedAt} IST)\nOutcome: ${outcomeStr}\nDuration: ${duration}`;
+      }).join("\n\n");
     },
   };
 }

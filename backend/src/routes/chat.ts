@@ -2,10 +2,11 @@ import type { FastifyInstance } from "fastify";
 import Anthropic from "@anthropic-ai/sdk";
 import { randomUUID } from "crypto";
 import { DhanClient } from "../lib/dhan/client.js";
-import { TOOLS, type ToolDefinition, getAllToolDefinitions, getApprovalDescription, createUpdateMemoryTool, createRegisterTriggerTool, createCancelTriggerTool, createListTriggersTool, createRegisterScheduleTool, createPauseScheduleTool, createResumeScheduleTool, createListSchedulesTool, createDeleteScheduleTool, createStrategyTools, createTradeTools } from "../lib/tools.js";
+import { TOOLS, type ToolDefinition, getAllToolDefinitions, getApprovalDescription, createUpdateMemoryTool, createRegisterTriggerTool, createCancelTriggerTool, createListTriggersTool, createRegisterScheduleTool, createPauseScheduleTool, createResumeScheduleTool, createListSchedulesTool, createDeleteScheduleTool, createGetScheduleRunsTool, createStrategyTools, createTradeTools } from "../lib/tools.js";
 import { DhanTokenExpiredError } from "../types.js";
 import type { ClientMessage, ServerMessage } from "../types.js";
 import type { ConversationStore, MemoryStore, TriggerStore, ApprovalStore, ScheduleStore, StrategyStore, TradeStore } from "../lib/storage/index.js";
+import type { ScheduleRunStore } from "../lib/scheduler/store.js";
 import { getSecurityId } from "../lib/dhan/instruments.js";
 
 const anthropic = new Anthropic();
@@ -31,7 +32,7 @@ Error handling:
 - Common translations: a 400 error on a quote usually means the market is closed or the symbol isn't available right now; a 400 on an order means the order parameters were invalid; a 5xx means Dhan's servers are having issues
 - If the error is "TOOL_ERROR: TOKEN_EXPIRED", tell the user their session has expired and they need to reconnect — do not call any more tools`;
 
-export async function chatRoute(fastify: FastifyInstance, opts: { store: ConversationStore; memory: MemoryStore; triggers: TriggerStore; approvals: ApprovalStore; schedules: ScheduleStore; strategies: StrategyStore; trades: TradeStore }) {
+export async function chatRoute(fastify: FastifyInstance, opts: { store: ConversationStore; memory: MemoryStore; triggers: TriggerStore; approvals: ApprovalStore; schedules: ScheduleStore; scheduleRuns: ScheduleRunStore; strategies: StrategyStore; trades: TradeStore }) {
   fastify.get("/ws/chat", { websocket: true }, async (socket, request) => {
     const dhanClient = new DhanClient();
     const pendingApprovals = new Map<string, (approved: boolean) => void>();
@@ -48,6 +49,7 @@ export async function chatRoute(fastify: FastifyInstance, opts: { store: Convers
     const resumeScheduleTool = createResumeScheduleTool(opts.schedules);
     const listSchedulesTool = createListSchedulesTool(opts.schedules);
     const deleteScheduleTool = createDeleteScheduleTool(opts.schedules);
+    const getScheduleRunsTool = createGetScheduleRunsTool(opts.scheduleRuns);
     const strategyToolList = createStrategyTools(opts.strategies, opts.triggers, opts.schedules, opts.trades);
     const tradeToolList = createTradeTools(opts.trades);
     const localTools: Record<string, ToolDefinition> = {
@@ -60,6 +62,7 @@ export async function chatRoute(fastify: FastifyInstance, opts: { store: Convers
       resume_schedule: resumeScheduleTool,
       list_schedules: listSchedulesTool,
       delete_schedule: deleteScheduleTool,
+      get_schedule_runs: getScheduleRunsTool,
     };
     for (const t of strategyToolList) {
       localTools[t.definition.name] = t;
