@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "description": "AI-powered trading assistant for NSE (India) built on Claude",
   "bin": {
-    "vibe-trade": "./cli.js"
+    "vibetrade": "./cli.js"
   },
   "files": [
     "cli.js",

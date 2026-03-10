@@ -138,7 +138,7 @@ export function SettingsPanel({ onSaved }: { onSaved?: () => void } = {}) {
       <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
         <h2 className="text-sm font-semibold text-white mb-1">API Credentials</h2>
         <p className="text-xs text-gray-500 mb-4">
-          Credentials are stored on the server at <code className="text-gray-400">backend/data/credentials.json</code>.
+          Credentials are stored at <code className="text-gray-400">~/.vibetrade/credentials.json</code> (or <code className="text-gray-400">VIBETRADE_DATA_DIR</code>).
         </p>
 
         {loading ? (
