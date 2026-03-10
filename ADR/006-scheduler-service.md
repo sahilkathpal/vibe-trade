@@ -48,6 +48,7 @@ interface Schedule {
   lastRunAt?: string;
   nextRunAt: string;           // precomputed ISO, recomputed after each run
   createdAt: string;
+  staleAfterMs?: number;       // max ms overdue before job is skipped; set by Claude at creation time
 }
 ```
 
@@ -97,7 +98,25 @@ To migrate to BullMQ: implement `BullMQSchedulerService` that uses BullMQ repeat
 
 **Rationale:** The `setInterval` approach fires "at most once per missed window" on restart. If "exactly N fires for N missed windows" semantics are ever needed (e.g. replay 3 days of missed scans), BullMQ handles this natively via Redis-backed repeatable job tracking.
 
-### 5. updateLastRun before launching the job (double-fire prevention)
+### 5. Stale job skipping + double-fire prevention
+
+**Stale skip:** Before launching a due schedule, the tick checks whether the job is overdue beyond its `staleAfterMs` threshold (default: 5 minutes, hard cap: 2 hours). If it is, the job is skipped — `nextRunAt` is advanced normally and the skip is logged. The run is not recorded in `ScheduleRunStore`.
+
+```typescript
+const staleAfterMs = Math.min(s.staleAfterMs ?? DEFAULT_STALE_MS, MAX_STALE_MS);
+const overdueMs = now.getTime() - new Date(s.nextRunAt).getTime();
+if (overdueMs > staleAfterMs) {
+  void scheduleStore.updateNextRunAt(s.id, nextRunAt);
+  console.log(`[scheduler] skipping stale job "${s.name}" (overdue by ${Math.round(overdueMs / 60000)}m)`);
+  return false; // filtered out
+}
+```
+
+**Why stale skipping matters for trading:** A "premarket scan at 9:15am" run at 2pm would call real-time APIs and produce trade proposals anchored to the wrong market context. Skipping is always correct; running late is almost always wrong.
+
+**Claude sets `staleAfterMs` at creation time** based on the cron cadence and task urgency — e.g. ~90 seconds for a per-minute scan, ~10 minutes for a daily open task. This is part of the `register_schedule` tool's input schema. The server caps it at 2 hours regardless.
+
+**Double-fire prevention:** `updateLastRun` is called *before* launching the async job:
 
 ```typescript
 // Advance nextRunAt BEFORE launching async job
@@ -107,9 +126,7 @@ await this.scheduleStore.updateLastRun(schedule.id, nowIso, nextRunAt);
 runScheduleJob(...).catch(...).finally(() => { this.activeJobs--; });
 ```
 
-If the server crashes after `updateLastRun` but before `runScheduleJob` completes, that run is absent from history — but the schedule does not double-fire on restart. This is the correct trade-off: a missed scan from 3 days ago is irrelevant; a double-fire could queue duplicate trade approvals.
-
-Missed windows on restart fire **once** (with current data, not historical). By design — replaying stale market data would produce misleading trade proposals.
+If the server crashes after `updateLastRun` but before `runScheduleJob` completes, that run is absent from history — but the schedule does not double-fire on restart. Combined with stale skipping, a missed window on restart is simply dropped rather than replayed with misleading data.
 
 ### 6. Resume recomputes nextRunAt from now
 
@@ -204,6 +221,8 @@ SchedulerService (60s tick)
     │
     ├─ tradingDaysOnly + non-trading day → updateNextRunAt only, skip
     │
+    ├─ overdueMs > staleAfterMs          → updateNextRunAt only, skip (stale guard)
+    │
     ├─ updateLastRun(now, nextRunAt)     ← write before launching (double-fire guard)
     │
     └─ runScheduleJob(schedule, ...)     ← Sonnet, max 10 turns
@@ -256,6 +275,6 @@ Modified files: `heartbeat/types.ts`, `heartbeat/evaluator.ts`, `heartbeat/servi
 ## Consequences
 
 - **Cost profile**: schedules run only when due; a `tradingDaysOnly` 9:15am schedule costs one Sonnet session on each trading day morning. Heartbeat cost on closed days drops to zero Dhan API calls and zero Haiku calls — only the `list()` store read and time-trigger evaluation remain.
-- **Reliability**: `updateLastRun` before job launch means no double-fire on restart. Missed windows replay once with current data, not historically.
+- **Reliability**: `updateLastRun` before job launch means no double-fire on restart. Missed windows are skipped (stale guard) rather than replayed with stale market context.
 - **Correctness**: code triggers no longer throw or misfire during closed market or partial quote failure.
 - **Scaling**: `schedules.json` is appropriate for single-user localhost. BullMQ with Redis is the natural upgrade for hosted multi-user deployment — the `runner.ts` boundary makes this a one-file swap.

@@ -999,6 +999,7 @@ export function createRegisterScheduleTool(store: ScheduleStore): ToolDefinition
           tradingDaysOnly: { type: "boolean", description: "If true, skip NSE holidays and weekends" },
           prompt: { type: "string", description: "The instruction for the LLM when this schedule fires (e.g. 'Read latest news, find intraday opportunities, queue promising trades for approval')" },
           strategy_id: { type: "string", description: "Optional strategy ID to link this schedule to a strategy" },
+          staleAfterMs: { type: "number", description: "How many milliseconds after the scheduled time the job is considered stale and should be skipped. Choose based on the cron cadence and task urgency — e.g. 90000 for a per-minute scan, 600000 for a daily market-open task. Max enforced server-side: 7200000 (2 hours)." },
         },
         required: ["name", "description", "cronExpression", "tradingDaysOnly", "prompt"],
       },
@@ -1010,6 +1011,10 @@ export function createRegisterScheduleTool(store: ScheduleStore): ToolDefinition
       const { name, description, cronExpression, tradingDaysOnly, prompt } = args as {
         name: string; description: string; cronExpression: string; tradingDaysOnly: boolean; prompt: string;
       };
+      const MAX_STALE_MS = 2 * 60 * 60 * 1000; // 2 hours
+      const staleAfterMs = args.staleAfterMs != null
+        ? Math.min(args.staleAfterMs as number, MAX_STALE_MS)
+        : undefined;
 
       // Validate cron expression
       try {
@@ -1034,6 +1039,7 @@ export function createRegisterScheduleTool(store: ScheduleStore): ToolDefinition
         nextRunAt,
         createdAt: now.toISOString(),
         ...(args.strategy_id ? { strategyId: args.strategy_id as string } : {}),
+        ...(staleAfterMs != null ? { staleAfterMs } : {}),
       };
 
       await store.upsert(schedule);

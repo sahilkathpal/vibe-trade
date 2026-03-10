@@ -62,14 +62,34 @@ export class SchedulerService {
       const now = new Date();
       const nowIso = now.toISOString();
 
+      const DEFAULT_STALE_MS = 5 * 60 * 1000; // 5 minutes
+      const MAX_STALE_MS = 2 * 60 * 60 * 1000; // 2 hours
+
       const activeSchedules = await this.scheduleStore.list({ status: "active" });
       const dueSchedules = activeSchedules.filter(s => s.nextRunAt <= nowIso);
 
       if (dueSchedules.length === 0) return;
 
-      console.log(`[scheduler] due schedules: ${dueSchedules.map(s => s.name).join(", ")}`);
+      // Filter out stale jobs (overdue beyond their threshold)
+      const runnableSchedules = dueSchedules.filter(s => {
+        const staleAfterMs = Math.min(s.staleAfterMs ?? DEFAULT_STALE_MS, MAX_STALE_MS);
+        const overdueMs = now.getTime() - new Date(s.nextRunAt).getTime();
+        if (overdueMs > staleAfterMs) {
+          const nextRunAt = s.tradingDaysOnly
+            ? computeNextTradingRunAt(s.cronExpression, now)
+            : computeNextRunAt(s.cronExpression, now);
+          void this.scheduleStore.updateNextRunAt(s.id, nextRunAt);
+          console.log(`[scheduler] skipping stale job "${s.name}" (overdue by ${Math.round(overdueMs / 60000)}m), next: ${nextRunAt}`);
+          return false;
+        }
+        return true;
+      });
 
-      for (const schedule of dueSchedules) {
+      if (runnableSchedules.length === 0) return;
+
+      console.log(`[scheduler] due schedules: ${runnableSchedules.map(s => s.name).join(", ")}`);
+
+      for (const schedule of runnableSchedules) {
         if (this.activeJobs >= 3) {
           console.warn(`[scheduler] max concurrent jobs reached, skipping schedule ${schedule.id}`);
           continue;

@@ -12,6 +12,7 @@ export interface Schedule {
   nextRunAt: string;
   createdAt: string;
   strategyId?: string;
+  staleAfterMs?: number;
 }
 
 export type ScheduleRunOutcome =
