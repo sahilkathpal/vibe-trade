@@ -30,12 +30,12 @@ export class DhanClient {
   private accessToken: string;
   private clientId: string;
 
-  constructor() {
-    this.accessToken = process.env.DHAN_ACCESS_TOKEN ?? "";
-    this.clientId = process.env.DHAN_CLIENT_ID ?? "";
-    if (!this.accessToken || !this.clientId) {
-      throw new Error("DHAN_ACCESS_TOKEN and DHAN_CLIENT_ID must be set in environment variables");
+  constructor(accessToken: string, clientId: string) {
+    if (!accessToken || !clientId) {
+      throw new Error("Missing Dhan credentials");
     }
+    this.accessToken = accessToken;
+    this.clientId = clientId;
   }
 
   private headers(): Record<string, string> {

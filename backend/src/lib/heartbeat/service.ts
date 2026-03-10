@@ -22,7 +22,7 @@ export class HeartbeatService {
   private seenHeadlineLinks = new Set<string>();
 
   constructor(
-    private readonly dhan: DhanClient,
+    private dhan: DhanClient,
     private readonly triggers: TriggerStore,
     private readonly approvals: ApprovalStore,
     private readonly triggerAudit: TriggerAuditStore,
@@ -31,6 +31,10 @@ export class HeartbeatService {
     private readonly strategyStore?: StrategyStore,
     private readonly tradeStore?: TradeStore,
   ) {}
+
+  setDhanClient(client: DhanClient): void {
+    this.dhan = client;
+  }
 
   start(): void {
     if (this.timer) return;

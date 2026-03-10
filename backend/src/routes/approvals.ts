@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { randomUUID } from "crypto";
-import { DhanClient } from "../lib/dhan/client.js";
+import { getDhanClient } from "../lib/credentials.js";
 import { getSecurityId } from "../lib/dhan/instruments.js";
 import type { ApprovalStore, TriggerStore } from "../lib/storage/index.js";
 
@@ -46,7 +46,7 @@ export async function approvalsRoute(
       // Approved
       if (approval.kind === "trade") {
         try {
-          const dhan = new DhanClient();
+          const dhan = getDhanClient();
           const ta = approval.tradeArgs;
           const securityId = await getSecurityId(ta.symbol);
           const result = await dhan.placeOrder({

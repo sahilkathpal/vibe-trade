@@ -9,8 +9,9 @@ import { approvalsRoute } from "./routes/approvals.js";
 import { triggersRoute } from "./routes/triggers.js";
 import { schedulesRoute } from "./routes/schedules.js";
 import { strategiesRoute } from "./routes/strategies.js";
+import { settingsRoute } from "./routes/settings.js";
 import { createStorageProvider } from "./lib/storage/index.js";
-import { DhanClient } from "./lib/dhan/client.js";
+import { credentialsStore, getDhanClient } from "./lib/credentials.js";
 import { HeartbeatService } from "./lib/heartbeat/service.js";
 import { SchedulerService } from "./lib/scheduler/service.js";
 
@@ -19,6 +20,8 @@ const PORT = parseInt(process.env.PORT ?? "3001", 10);
 const fastify = Fastify({ logger: { level: "info" } });
 
 async function start() {
+  await credentialsStore.load();
+
   const storage = createStorageProvider();
 
   await fastify.register(fastifyCors, {
@@ -29,6 +32,7 @@ async function start() {
   await fastify.register(fastifyWebsocket);
 
   await fastify.register(statusRoute);
+  await fastify.register(settingsRoute);
   await fastify.register(chatRoute, {
     store: storage.conversations,
     memory: storage.memory,
@@ -58,22 +62,24 @@ async function start() {
   // Start heartbeat (after server is up)
   let heartbeat: HeartbeatService | null = null;
   try {
-    const dhan = new DhanClient();
+    const dhan = getDhanClient();
     heartbeat = new HeartbeatService(dhan, storage.triggers, storage.approvals, storage.triggerAudit, storage.memory, 60_000, storage.strategies, storage.trades);
     heartbeat.start();
   } catch (err) {
-    console.warn("[heartbeat] Failed to start (likely missing DHAN env vars):", (err as Error).message);
+    console.warn("[heartbeat] Failed to start (Dhan credentials not configured):", (err as Error).message);
   }
 
   // Start scheduler
   let scheduler: SchedulerService | null = null;
   try {
-    const schedulerDhan = new DhanClient();
+    const schedulerDhan = getDhanClient();
     scheduler = new SchedulerService(schedulerDhan, storage.schedules, storage.scheduleRuns, storage.triggers, storage.approvals, storage.memory, 60_000, storage.strategies, storage.trades);
     scheduler.start();
   } catch (err) {
     console.warn("[scheduler] Failed to start:", (err as Error).message);
   }
+
+  credentialsStore.registerServices({ heartbeat, scheduler });
 
   const shutdown = async () => {
     heartbeat?.stop();

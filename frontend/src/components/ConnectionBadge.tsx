@@ -11,24 +11,30 @@ export function ConnectionBadge() {
   useEffect(() => {
     const url = process.env.NEXT_PUBLIC_BACKEND_HTTP_URL ?? "http://localhost:3001";
 
-    fetch(`${url}/status`)
-      .then(async (res) => {
-        const data = await res.json() as { status: string; message?: string };
-        if (data.status === "connected") {
-          setStatus("connected");
-          setMessage("Dhan connected");
-        } else if (data.status === "token_expired") {
-          setStatus("token_expired");
-          setMessage("Token expired");
-        } else {
+    const check = () => {
+      fetch(`${url}/status`)
+        .then(async (res) => {
+          const data = await res.json() as { status: string; message?: string };
+          if (data.status === "connected") {
+            setStatus("connected");
+            setMessage("Dhan connected");
+          } else if (data.status === "token_expired") {
+            setStatus("token_expired");
+            setMessage("Token expired");
+          } else {
+            setStatus("error");
+            setMessage(data.message ?? "Connection error");
+          }
+        })
+        .catch(() => {
           setStatus("error");
-          setMessage(data.message ?? "Connection error");
-        }
-      })
-      .catch(() => {
-        setStatus("error");
-        setMessage("Backend unreachable");
-      });
+          setMessage("Backend unreachable");
+        });
+    };
+
+    check();
+    window.addEventListener("credentials-updated", check);
+    return () => window.removeEventListener("credentials-updated", check);
   }, []);
 
   const config = {

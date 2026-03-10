@@ -8,9 +8,12 @@ import { ApprovalsPanel } from "./ApprovalsPanel";
 import { TriggersPanel } from "./TriggersPanel";
 import { SchedulesPanel } from "./SchedulesPanel";
 import { StrategiesPanel } from "./StrategiesPanel";
+import { SettingsModal } from "./SettingsModal";
+import { SettingsPanel } from "./SettingsPanel";
 import { useApprovals } from "../hooks/useApprovals";
+import { useSettings } from "../hooks/useSettings";
 
-type Tab = "chat" | "approvals" | "triggers" | "schedules" | "strategies";
+type Tab = "chat" | "approvals" | "triggers" | "schedules" | "strategies" | "settings";
 
 function PendingBadge({ count }: { count: number }) {
   if (count === 0) return null;
@@ -27,6 +30,12 @@ export function ChatLayout() {
   const [activeTab, setActiveTab] = useState<Tab>("chat");
 
   const { pendingCount } = useApprovals();
+  const { loading: settingsLoading, allConfigured } = useSettings();
+  const [showSetupModal, setShowSetupModal] = useState(false);
+
+  useEffect(() => {
+    if (!settingsLoading && !allConfigured) setShowSetupModal(true);
+  }, [settingsLoading, allConfigured]);
 
   // Initialise conversationId from localStorage on first client render
   useEffect(() => {
@@ -61,9 +70,17 @@ export function ChatLayout() {
     { id: "triggers", label: "Triggers" },
     { id: "schedules", label: "Schedules" },
     { id: "strategies", label: "Strategies" },
+    { id: "settings", label: "Settings" },
   ];
 
   return (
+    <>
+    {showSetupModal && (
+      <SettingsModal
+        onSaved={() => setShowSetupModal(false)}
+        onSkip={() => setShowSetupModal(false)}
+      />
+    )}
     <div className="flex h-screen">
       <Sidebar
         conversationId={conversationId}
@@ -135,8 +152,16 @@ export function ChatLayout() {
               <StrategiesPanel />
             </div>
           )}
+
+          {/* Settings panel */}
+          {activeTab === "settings" && (
+            <div className="flex-1 overflow-hidden flex flex-col">
+              <SettingsPanel />
+            </div>
+          )}
         </main>
       </div>
     </div>
+    </>
   );
 }

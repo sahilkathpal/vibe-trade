@@ -1,15 +1,14 @@
 import type { FastifyInstance } from "fastify";
 import Anthropic from "@anthropic-ai/sdk";
 import { randomUUID } from "crypto";
-import { DhanClient } from "../lib/dhan/client.js";
+import type { DhanClient } from "../lib/dhan/client.js";
+import { getDhanClient, getAnthropicClient } from "../lib/credentials.js";
 import { TOOLS, type ToolDefinition, getAllToolDefinitions, getApprovalDescription, createUpdateMemoryTool, createRegisterTriggerTool, createCancelTriggerTool, createListTriggersTool, createRegisterScheduleTool, createPauseScheduleTool, createResumeScheduleTool, createListSchedulesTool, createDeleteScheduleTool, createGetScheduleRunsTool, createStrategyTools, createTradeTools } from "../lib/tools.js";
 import { DhanTokenExpiredError } from "../types.js";
 import type { ClientMessage, ServerMessage } from "../types.js";
 import type { ConversationStore, MemoryStore, TriggerStore, ApprovalStore, ScheduleStore, StrategyStore, TradeStore } from "../lib/storage/index.js";
 import type { ScheduleRunStore } from "../lib/scheduler/store.js";
 import { getSecurityId } from "../lib/dhan/instruments.js";
-
-const anthropic = new Anthropic();
 
 const SYSTEM_PROMPT = `You are VibeTrade, an AI-powered trading assistant connected to the user's Dhan brokerage account.
 
@@ -34,7 +33,6 @@ Error handling:
 
 export async function chatRoute(fastify: FastifyInstance, opts: { store: ConversationStore; memory: MemoryStore; triggers: TriggerStore; approvals: ApprovalStore; schedules: ScheduleStore; scheduleRuns: ScheduleRunStore; strategies: StrategyStore; trades: TradeStore }) {
   fastify.get("/ws/chat", { websocket: true }, async (socket, request) => {
-    const dhanClient = new DhanClient();
     const pendingApprovals = new Map<string, (approved: boolean) => void>();
     const conversationId =
       (request.query as { conversationId?: string }).conversationId ?? randomUUID();
@@ -130,6 +128,8 @@ ${resolved.plan}
           }
         }
 
+        let dhanClient: DhanClient | null = null;
+        try { dhanClient = getDhanClient(); } catch { /* not configured */ }
         await runClaudeLoop(dhanClient, conversationHistory, pendingApprovals, send, turnSystemPrompt, localTools, opts.approvals, opts.trades);
         await opts.store.append(conversationId, conversationHistory.slice(saveFrom));
       }
@@ -151,10 +151,10 @@ ${resolved.plan}
 async function runTool(
   toolDef: ToolDefinition,
   args: Record<string, unknown>,
-  dhanClient: DhanClient
+  dhanClient: DhanClient | null
 ): Promise<{ result: string; isError: boolean; tokenExpired: boolean }> {
   try {
-    const result = await toolDef.handler(args, dhanClient);
+    const result = await toolDef.handler(args, dhanClient as DhanClient);
     return { result, isError: false, tokenExpired: false };
   } catch (err) {
     if (err instanceof DhanTokenExpiredError) {
@@ -170,7 +170,7 @@ async function runTool(
 }
 
 async function runClaudeLoop(
-  dhanClient: DhanClient,
+  dhanClient: DhanClient | null,
   history: Anthropic.MessageParam[],
   pendingApprovals: Map<string, (approved: boolean) => void>,
   send: (msg: ServerMessage) => void,
@@ -182,6 +182,8 @@ async function runClaudeLoop(
   let tokenExpired = false;
 
   try {
+    const anthropic = getAnthropicClient();
+
     while (true) {
       const stream = anthropic.messages.stream({
         model: "claude-sonnet-4-6",

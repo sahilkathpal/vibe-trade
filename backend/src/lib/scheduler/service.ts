@@ -27,7 +27,7 @@ export class SchedulerService {
   private activeJobs = 0;
 
   constructor(
-    private readonly dhan: DhanClient,
+    private dhan: DhanClient,
     private readonly scheduleStore: ScheduleStore,
     private readonly scheduleRunStore: ScheduleRunStore,
     private readonly triggerStore: TriggerStore,
@@ -37,6 +37,10 @@ export class SchedulerService {
     private readonly strategyStore?: StrategyStore,
     private readonly tradeStore?: TradeStore,
   ) {}
+
+  setDhanClient(client: DhanClient): void {
+    this.dhan = client;
+  }
 
   start(): void {
     if (this.timer) return;

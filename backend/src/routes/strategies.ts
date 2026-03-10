@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import type { StrategyStore, TriggerStore, ScheduleStore, TradeStore, TradeRecord } from "../lib/storage/index.js";
-import { DhanClient } from "../lib/dhan/client.js";
+import type { DhanClient } from "../lib/dhan/client.js";
+import { getDhanClient } from "../lib/credentials.js";
 import { computeOpenPositions, computeRealizedPnl } from "../lib/trade-utils.js";
 import { syncOrders } from "../lib/order-sync.js";
 
@@ -180,7 +181,7 @@ export async function strategiesRoute(
   fastify.post("/api/trades/sync", async (_request, reply) => {
     let dhan: DhanClient;
     try {
-      dhan = new DhanClient();
+      dhan = getDhanClient();
     } catch {
       reply.code(503);
       return { error: "Dhan credentials not configured" };
