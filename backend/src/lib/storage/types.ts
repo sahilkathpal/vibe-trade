@@ -112,6 +112,11 @@ export interface TradeStore {
   update(id: string, patch: Partial<TradeRecord>): Promise<void>;
 }
 
+export interface CredentialsStore {
+  read(): Promise<Record<string, string> | null>;
+  write(data: Record<string, string>): Promise<void>;
+}
+
 export interface StorageProvider {
   conversations: ConversationStore;
   memory: MemoryStore;
@@ -122,4 +127,5 @@ export interface StorageProvider {
   scheduleRuns: ScheduleRunStore;
   strategies: StrategyStore;
   trades: TradeStore;
+  credentials: CredentialsStore;
 }

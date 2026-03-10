@@ -1,10 +1,6 @@
-import { readFile, writeFile, mkdir } from "fs/promises";
-import { join } from "path";
 import Anthropic from "@anthropic-ai/sdk";
 import { DhanClient } from "./dhan/client.js";
-
-const DATA_DIR = join(process.cwd(), "data");
-const CREDENTIALS_FILE = join(DATA_DIR, "credentials.json");
+import type { CredentialsStore } from "./storage/types.js";
 
 type CredentialKey = "ANTHROPIC_API_KEY" | "DHAN_ACCESS_TOKEN" | "DHAN_CLIENT_ID";
 
@@ -19,11 +15,16 @@ interface ServiceRefs {
   scheduler: { setDhanClient(c: DhanClient): void } | null;
 }
 
-class CredentialsStore {
+class AppCredentialsStore {
   private map: CredentialsMap = {};
   private dhanClient: DhanClient | null = null;
   private anthropicClient: Anthropic | null = null;
   private services: ServiceRefs = { heartbeat: null, scheduler: null };
+  private store: CredentialsStore | null = null;
+
+  init(store: CredentialsStore): void {
+    this.store = store;
+  }
 
   async load(): Promise<void> {
     // Seed from process.env as defaults
@@ -33,13 +34,8 @@ class CredentialsStore {
     if (process.env.DHAN_CLIENT_ID) envMap.DHAN_CLIENT_ID = process.env.DHAN_CLIENT_ID;
 
     // credentials.json overrides process.env
-    try {
-      const raw = await readFile(CREDENTIALS_FILE, "utf-8");
-      const saved = JSON.parse(raw) as CredentialsMap;
-      this.map = { ...envMap, ...saved };
-    } catch {
-      this.map = envMap;
-    }
+    const saved = await this.store?.read();
+    this.map = saved ? { ...envMap, ...(saved as CredentialsMap) } : envMap;
 
     this.rebuildClients();
   }
@@ -58,7 +54,7 @@ class CredentialsStore {
         (this.map as Record<string, string>)[k] = v;
       }
     }
-    await this.persist();
+    await this.store?.write(this.map as Record<string, string>);
     this.rebuildClients();
     this.propagateClients();
   }
@@ -105,13 +101,8 @@ class CredentialsStore {
       this.services.scheduler?.setDhanClient(this.dhanClient);
     }
   }
-
-  private async persist(): Promise<void> {
-    await mkdir(DATA_DIR, { recursive: true });
-    await writeFile(CREDENTIALS_FILE, JSON.stringify(this.map, null, 2), "utf-8");
-  }
 }
 
-export const credentialsStore = new CredentialsStore();
+export const credentialsStore = new AppCredentialsStore();
 export function getDhanClient(): DhanClient { return credentialsStore.getDhanClient(); }
 export function getAnthropicClient(): Anthropic { return credentialsStore.getAnthropicClient(); }

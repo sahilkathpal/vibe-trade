@@ -20,9 +20,9 @@ const PORT = parseInt(process.env.PORT ?? "3001", 10);
 const fastify = Fastify({ logger: { level: "info" } });
 
 async function start() {
-  await credentialsStore.load();
-
   const storage = createStorageProvider();
+  credentialsStore.init(storage.credentials);
+  await credentialsStore.load();
 
   await fastify.register(fastifyCors, {
     origin: process.env.FRONTEND_URL ?? "http://localhost:3000",
