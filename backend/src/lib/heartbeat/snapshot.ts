@@ -12,9 +12,9 @@ export async function buildSnapshot(dhan: DhanClient, triggers: Trigger[]): Prom
 
   // Build watchlist (equity symbols only for getQuote)
   const watchSymbols = new Set<string>(triggers.flatMap(t => t.watchSymbols));
-  // Remove index names from equity watchlist
+  // Remove index names and wildcards from equity watchlist
   const indexNames = new Set(["NIFTY50", "BANKNIFTY", "NIFTY", "NIFTYBANK"]);
-  const equitySymbols = [...watchSymbols].filter(s => !indexNames.has(s.toUpperCase()));
+  const equitySymbols = [...watchSymbols].filter(s => s !== "*" && !indexNames.has(s.toUpperCase()));
 
   // When market is closed, skip live quote fetches — they return stale/zero data.
   // Positions and funds are account data and are always worth fetching.

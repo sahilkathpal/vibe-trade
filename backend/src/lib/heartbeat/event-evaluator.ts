@@ -18,27 +18,31 @@ export async function evaluateEventTriggers(
 
     switch (cond.kind) {
       case "position_opened": {
+        const isWildcard = cond.symbols.includes("*");
         const newSymbols = new Set(delta.newPositions.map(p => p.symbol.toUpperCase()));
-        if (cond.symbols.some(s => newSymbols.has(s.toUpperCase()))) {
+        if (isWildcard ? newSymbols.size > 0 : cond.symbols.some(s => newSymbols.has(s.toUpperCase()))) {
           fired.push(trigger.id);
         }
         break;
       }
       case "position_closed": {
+        const isWildcard = cond.symbols.includes("*");
         const closedSymbols = new Set(delta.closedPositions.map(p => p.symbol.toUpperCase()));
-        if (cond.symbols.some(s => closedSymbols.has(s.toUpperCase()))) {
+        if (isWildcard ? closedSymbols.size > 0 : cond.symbols.some(s => closedSymbols.has(s.toUpperCase()))) {
           fired.push(trigger.id);
         }
         break;
       }
       case "news_mention": {
+        const isWildcard = cond.symbols.includes("*");
         const watchUpper = cond.symbols.map(s => s.toUpperCase());
         let mentioned = false;
         for (const cat of cond.categories) {
           const items = delta.newHeadlines[cat] ?? [];
-          if (items.some(item =>
-            watchUpper.some(sym => item.title.toUpperCase().includes(sym))
-          )) {
+          if (isWildcard
+            ? items.length > 0
+            : items.some(item => watchUpper.some(sym => item.title.toUpperCase().includes(sym)))
+          ) {
             mentioned = true;
             break;
           }

@@ -1,4 +1,4 @@
-import Anthropic from "@anthropic-ai/sdk";
+import type Anthropic from "@anthropic-ai/sdk";
 import { randomUUID } from "crypto";
 import type { DhanClient } from "../dhan/client.js";
 import type { ApprovalStore, MemoryStore, StrategyStore, TradeStore } from "../storage/index.js";
@@ -10,6 +10,8 @@ import { TOOLS } from "../tools.js";
 import { syncOrders } from "../order-sync.js";
 import { fetchCandles } from "../dhan/candles.js";
 import type { Candle } from "../indicators.js";
+import { getAnthropicClient } from "../credentials.js";
+import { DhanTokenExpiredError } from "../../types.js";
 import { computeIndicators } from "../indicators.js";
 
 // ── TtlCache ──────────────────────────────────────────────────────────────────
@@ -76,8 +78,6 @@ function indicatorSummary(symbol: string, interval: string, candles: Candle[]): 
     last_5_with_indicators: result.slice(-5),
   }, null, 2);
 }
-
-const anthropic = new Anthropic();
 
 const READ_ONLY_TOOLS = [
   "get_quote", "get_index_quote", "get_positions", "get_funds",
@@ -203,6 +203,24 @@ export async function runScheduleJob(
   const startedAt = new Date().toISOString();
   const runId = randomUUID();
 
+  // Pre-flight: fail fast if Dhan token is expired rather than burning Claude turns
+  try {
+    await dhan.getFunds();
+  } catch (err) {
+    if (err instanceof DhanTokenExpiredError) {
+      const msg = "Dhan token expired — update credentials in Settings.";
+      console.warn(`[scheduler] skipping run ${runId}: ${msg}`);
+      await scheduleRunStore.append({
+        id: runId, scheduleId: schedule.id, scheduleName: schedule.name,
+        startedAt, completedAt: new Date().toISOString(),
+        outcome: { type: "error", message: msg },
+        ...(schedule.strategyId ? { strategyId: schedule.strategyId } : {}),
+      }).catch(() => {});
+      return;
+    }
+    // Non-token errors (network, etc.) — let the job continue
+  }
+
   if (tradeStore) {
     await syncOrders(dhan, tradeStore).catch(err =>
       console.error("[scheduler] pre-run order sync failed:", err)
@@ -270,7 +288,7 @@ IMPORTANT: Before queuing any trade, confirm the required capital does not excee
     async function runJobLoop(): Promise<void> {
       while (!terminated && turns < 10) {
         turns++;
-        const resp = await anthropic.messages.create({   // Fix 8: reduced max_tokens
+        const resp = await getAnthropicClient().messages.create({
           model: "claude-sonnet-4-6",
           max_tokens: 2048,
           system: systemPrompt,

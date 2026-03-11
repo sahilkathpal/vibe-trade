@@ -800,6 +800,7 @@ Examples:
 - condition: { mode: "code", expression: "quotes['RELIANCE'].lastPrice < 2800" }
 - condition: { mode: "code", expression: "vix?.lastPrice > 20 && nifty50.changePercent < -1.5" }
 - condition: { mode: "event", kind: "position_opened", symbols: ["RELIANCE"] }
+- condition: { mode: "event", kind: "position_opened", symbols: ["*"] }  ← fires on ANY new position
 - condition: { mode: "event", kind: "pe_below", symbol: "TATASTEEL", threshold: 10 }
 - condition: { mode: "event", kind: "vix_above", threshold: 18 }
 - condition: { mode: "event", kind: "nifty_drop_percent", threshold: 1.5 }
@@ -823,7 +824,7 @@ Examples:
               description: { type: "string", description: "Natural language condition (llm mode)" },
               fireAt: { type: "string", description: "ISO timestamp for time-mode triggers — fires once when Date.now() >= fireAt" },
               kind: { type: "string", enum: ["position_opened", "position_closed", "news_mention", "sentiment_positive", "sentiment_negative", "pe_below", "pe_above", "fundamentals_changed", "vix_above", "vix_below", "nifty_drop_percent", "nifty_rise_percent"], description: "Event kind (event mode only)" },
-              symbols: { type: "array", items: { type: "string" }, description: "Symbols to watch (position/news/sentiment event kinds)" },
+              symbols: { type: "array", items: { type: "string" }, description: "Symbols to watch (position/news/sentiment event kinds). Use [\"*\"] to match any symbol — e.g. fire on any position opened/closed." },
               categories: { type: "array", items: { type: "string" }, description: "RSS categories to watch: markets, companies, economy, finance (news/sentiment event kinds)" },
               symbol: { type: "string", description: "Single symbol for pe_below / fundamentals_changed event kinds" },
               threshold: { type: "number", description: "Numeric threshold for pe_below, vix_above, nifty_drop_percent event kinds" },

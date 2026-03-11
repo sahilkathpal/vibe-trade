@@ -103,6 +103,8 @@ interface ChatProps {
   conversationId: string | null;
   /** Called after each completed Claude turn — used by the parent to refresh the conversation list */
   onTurnComplete?: () => void;
+  /** Incremented when credentials are saved — clears the token-expired banner */
+  credentialsVersion?: number;
 }
 
 interface Strategy {
@@ -110,7 +112,7 @@ interface Strategy {
   name: string;
 }
 
-export function Chat({ conversationId, onTurnComplete }: ChatProps) {
+export function Chat({ conversationId, onTurnComplete, credentialsVersion = 0 }: ChatProps) {
   const [items, setItems] = useState<ChatItem[]>([]);
   const [input, setInput] = useState("");
   const [connected, setConnected] = useState(false);
@@ -169,6 +171,11 @@ export function Chat({ conversationId, onTurnComplete }: ChatProps) {
         // new conversation or backend unreachable — start with empty slate
       });
   }, [conversationId]);
+
+  // Clear token-expired banner when credentials are saved
+  useEffect(() => {
+    if (credentialsVersion > 0) setTokenExpired(false);
+  }, [credentialsVersion]);
 
   const appendText = useCallback((text: string) => {
     const id = currentAssistantIdRef.current;
@@ -383,8 +390,8 @@ export function Chat({ conversationId, onTurnComplete }: ChatProps) {
           <div>
             <p className="text-amber-300 font-medium">Dhan token expired</p>
             <p className="text-amber-500 text-xs mt-0.5">
-              Update <code className="font-mono bg-amber-950 px-1 rounded">DHAN_ACCESS_TOKEN</code> in{" "}
-              <code className="font-mono bg-amber-950 px-1 rounded">backend/.env</code> and restart the server.
+              Update your <code className="font-mono bg-amber-950 px-1 rounded">DHAN_ACCESS_TOKEN</code> in the{" "}
+              <code className="font-mono bg-amber-950 px-1 rounded">Settings</code> tab.
             </p>
           </div>
         </div>

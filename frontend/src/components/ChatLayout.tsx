@@ -126,7 +126,7 @@ export function ChatLayout() {
         <main className="flex-1 overflow-hidden flex flex-col">
           {/* Chat: always mounted (preserves WebSocket), hidden when not active */}
           <div className={activeTab === "chat" ? "flex-1 overflow-hidden" : "hidden"}>
-            <Chat conversationId={conversationId} onTurnComplete={handleTurnComplete} />
+            <Chat conversationId={conversationId} onTurnComplete={handleTurnComplete} credentialsVersion={connectionRefreshKey} />
           </div>
 
           {/* Approvals panel */}
