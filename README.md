@@ -179,19 +179,7 @@ Heartbeat → snapshot → Trigger fires → Playbook loaded
 | Anthropic API key | Claude Sonnet for reasoning jobs, Haiku for condition evaluation |
 | Dhan account | First supported broker — credentials added at `/settings` |
 
-**Install and run**
-
-```bash
-npm install -g vibe-trade
-vibetrade
-```
-
-```
-✓ VibeTrade running at http://localhost:3001
-  Click http://localhost:3001 if it doesn't open automatically
-```
-
-The browser opens automatically. Add your Anthropic API key and Dhan credentials at `http://localhost:3001/settings`.
+Add your Anthropic API key and Dhan credentials at `http://localhost:3001/settings` once the server is running.
 
 Everything runs on your machine. Your API key, credentials, trade history, and Playbooks never leave your local environment — stored in `~/.vibetrade/`.
 
